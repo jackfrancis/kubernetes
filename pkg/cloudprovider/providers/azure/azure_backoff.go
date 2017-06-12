@@ -17,13 +17,15 @@ limitations under the License.
 package azure
 
 import (
-	"k8s.io/apimachinery/pkg/util/wait"
+	"strconv"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/arm/compute"
 	"github.com/Azure/azure-sdk-for-go/arm/network"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/golang/glog"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // GetVirtualMachineWithRetry invokes az.getVirtualMachine with exponential backoff retry
@@ -150,11 +152,20 @@ func processRetryResponse(resp autorest.Response, err error) (bool, error) {
 
 // shouldRetryAPIRequest determines if the response from an HTTP request suggests periodic retry behavior
 func shouldRetryAPIRequest(resp autorest.Response, err error) bool {
-	if err != nil {
-		return true
+	// If the API responds with a "Retry-After" header key/val, we want to respect that
+	retryAfter := resp.Header.Get("Retry-After")
+	if retryAfter != "" {
+		waitPeriod, err := strconv.Atoi(retryAfter)
+		if err == nil {
+			glog.V(2).Infof("backoff: delaying %d seconds in response to API", waitPeriod)
+			// Because this delay is additive to existing, general backoff we don't need add'l jitter
+			time.Sleep(time.Duration(waitPeriod) * time.Second)
+			return true
+		}
+		glog.Warning("backoff: got unexpected 'Retry-After' value: %s", retryAfter)
 	}
-	// HTTP 4xx or 5xx suggests we should retry
-	if 399 < resp.StatusCode && resp.StatusCode < 600 {
+	// We should retry HTTP 429 responses
+	if resp.StatusCode == 429 {
 		return true
 	}
 	return false
