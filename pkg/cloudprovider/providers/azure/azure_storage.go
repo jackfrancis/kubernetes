@@ -67,9 +67,9 @@ func (az *Cloud) AttachDisk(diskName, diskURI string, nodeName types.NodeName, l
 	glog.V(2).Infof("create(%s): vm(%s)", az.ResourceGroup, vmName)
 	az.operationPollRateLimiter.Accept()
 	resp, err := az.VirtualMachinesClient.CreateOrUpdate(az.ResourceGroup, vmName, newVM, nil)
-	if az.CloudProviderBackoff && shouldRetryAPIRequest(resp, err) {
+	if backoffConfig := az.getBackoffConfig(resp); backoffConfig != nil {
 		glog.V(2).Infof("create(%s) backing off: vm(%s)", az.ResourceGroup, vmName)
-		retryErr := az.CreateOrUpdateVMWithRetry(vmName, newVM)
+		retryErr := az.CreateOrUpdateVMWithRetry(backoffConfig, vmName, newVM)
 		if retryErr != nil {
 			err = retryErr
 			glog.V(2).Infof("create(%s) abort backoff: vm(%s)", az.ResourceGroup, vmName)
@@ -148,9 +148,9 @@ func (az *Cloud) DetachDiskByName(diskName, diskURI string, nodeName types.NodeN
 	glog.V(2).Infof("create(%s): vm(%s)", az.ResourceGroup, vmName)
 	az.operationPollRateLimiter.Accept()
 	resp, err := az.VirtualMachinesClient.CreateOrUpdate(az.ResourceGroup, vmName, newVM, nil)
-	if az.CloudProviderBackoff && shouldRetryAPIRequest(resp, err) {
+	if backoffConfig := az.getBackoffConfig(resp); backoffConfig != nil {
 		glog.V(2).Infof("create(%s) backing off: vm(%s)", az.ResourceGroup, vmName)
-		retryErr := az.CreateOrUpdateVMWithRetry(vmName, newVM)
+		retryErr := az.CreateOrUpdateVMWithRetry(backoffConfig, vmName, newVM)
 		if retryErr != nil {
 			err = retryErr
 			glog.V(2).Infof("create(%s) abort backoff: vm(%s)", az.ResourceGroup, vmName)
