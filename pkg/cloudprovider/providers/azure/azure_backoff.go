@@ -53,7 +53,7 @@ func (az *Cloud) CreateOrUpdateSGWithRetry(backoffConfig *wait.Backoff, sg netwo
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.SecurityGroupsClient.CreateOrUpdate(az.ResourceGroup, *sg.Name, sg, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
@@ -62,7 +62,7 @@ func (az *Cloud) CreateOrUpdateLBWithRetry(backoffConfig *wait.Backoff, lb netwo
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.LoadBalancerClient.CreateOrUpdate(az.ResourceGroup, *lb.Name, lb, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
@@ -71,7 +71,7 @@ func (az *Cloud) CreateOrUpdatePIPWithRetry(backoffConfig *wait.Backoff, pip net
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.PublicIPAddressesClient.CreateOrUpdate(az.ResourceGroup, *pip.Name, pip, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
@@ -80,7 +80,7 @@ func (az *Cloud) CreateOrUpdateInterfaceWithRetry(backoffConfig *wait.Backoff, n
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.InterfacesClient.CreateOrUpdate(az.ResourceGroup, *nic.Name, nic, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
@@ -89,7 +89,7 @@ func (az *Cloud) DeletePublicIPWithRetry(backoffConfig *wait.Backoff, pipName st
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.PublicIPAddressesClient.Delete(az.ResourceGroup, pipName, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
@@ -98,7 +98,7 @@ func (az *Cloud) DeleteLBWithRetry(backoffConfig *wait.Backoff, lbName string) e
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.LoadBalancerClient.Delete(az.ResourceGroup, lbName, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
@@ -107,7 +107,7 @@ func (az *Cloud) CreateOrUpdateRouteTableWithRetry(backoffConfig *wait.Backoff, 
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.RouteTablesClient.CreateOrUpdate(az.ResourceGroup, az.RouteTableName, routeTable, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
@@ -116,7 +116,7 @@ func (az *Cloud) CreateOrUpdateRouteWithRetry(backoffConfig *wait.Backoff, route
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.RoutesClient.CreateOrUpdate(az.ResourceGroup, az.RouteTableName, *route.Name, route, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
@@ -125,7 +125,7 @@ func (az *Cloud) DeleteRouteWithRetry(backoffConfig *wait.Backoff, routeName str
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.RoutesClient.Delete(az.ResourceGroup, az.RouteTableName, routeName, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
@@ -134,33 +134,26 @@ func (az *Cloud) CreateOrUpdateVMWithRetry(backoffConfig *wait.Backoff, vmName s
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
 		resp, err := az.VirtualMachinesClient.CreateOrUpdate(az.ResourceGroup, vmName, newVM, nil)
-		return processRetryResponse(resp, err)
+		return processRetryResponse(resp, backoffConfig.Duration, err)
 	})
 }
 
 // getBackoffConfig delivers a *wait.Backoff configuration from an HTTP response
 func (az *Cloud) getBackoffConfig(resp autorest.Response) *wait.Backoff {
 	// If the API responds with a "Retry-After" header key/val, we want to respect that
-	retryAfter := resp.Header.Get("Retry-After")
-	if retryAfter != "" {
-		waitPeriod, err := strconv.Atoi(retryAfter)
-		if err == nil {
-			glog.V(2).Infof("backoff: retrying in %d seconds in response to API", waitPeriod)
-			return &wait.Backoff{
-				Duration: time.Duration(waitPeriod) * time.Second,
-				Steps:    retryAfterRetries,
-			}
-		}
-		glog.Warning("backoff: got unexpected 'Retry-After' value: %s", retryAfter)
-	}
-	// We should retry HTTP 429 responses if backoff is turned on
-	if az.CloudProviderBackoff && isRetryResponse(resp.StatusCode) {
+	retryAfter := getRetryAfter(resp)
+	if retryAfter > 0 {
+		glog.V(2).Infof("backoff: retrying in %d seconds in response to API", retryAfter)
+		// Using a linear (factor=1) backoff strategy for API-directed retry intervals
 		return &wait.Backoff{
-			Steps:    az.CloudProviderBackoffRetries,
-			Factor:   az.CloudProviderBackoffExponent,
-			Duration: time.Duration(az.CloudProviderBackoffDuration) * time.Second,
-			Jitter:   az.CloudProviderBackoffJitter,
+			Duration: retryAfter * time.Second,
+			Steps:    retryAfterRetries,
+			Factor:   1,
 		}
+	}
+	// If the API has no retry guidance we use the *Cloud default
+	if az.CloudProviderBackoff && isRetryResponse(resp.StatusCode) {
+		return &az.resourceRequestBackoff
 	}
 	return nil
 }
@@ -173,13 +166,33 @@ func isRetryResponse(statusCode int) bool {
 	return false
 }
 
+// Retrieves a 'Retry-After' HTTP header key value, if avail, and converts to time.Duration
+func getRetryAfter(resp autorest.Response) time.Duration {
+	retryAfter := resp.Header.Get("Retry-After")
+	if retryAfter != "" {
+		waitPeriod, err := strconv.Atoi(retryAfter)
+		if err != nil {
+			glog.Warning("backoff: got unexpected 'Retry-After' value: %s", retryAfter)
+			return 0
+		}
+		return time.Duration(waitPeriod)
+	}
+	return 0
+}
+
 // A wait.ConditionFunc function to deal with common HTTP backoff response conditions
-func processRetryResponse(resp autorest.Response, err error) (bool, error) {
+func processRetryResponse(resp autorest.Response, originalDelay time.Duration, err error) (bool, error) {
 	if isSuccessHTTPResponse(resp) {
 		glog.V(2).Infof("backoff: success, HTTP response=%d", resp.StatusCode)
 		return true, nil
 	}
 	glog.Errorf("backoff: failure, HTTP response=%d, err=%v", resp.StatusCode, err)
+
+	retryAfter := getRetryAfter(resp)
+	// We want to incorporate any additional delay time if the API response suggests our original delay isn't long enough
+	// A negative value passed to time.Sleep will return immediately
+	time.Sleep(retryAfter - originalDelay)
+
 	// suppress the error object so that backoff process continues
 	return false, nil
 }
