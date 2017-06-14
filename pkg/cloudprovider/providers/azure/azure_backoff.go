@@ -28,10 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
-// If we get a retry-after in HTTP response header, how many times to retry using that interval
-const retryAfterRetries = 5
+// For API-driven retry flows, how many retry iterations?
+const retryAfterIterations = 5
 
-// GetVirtualMachineWithRetry invokes az.getVirtualMachine with exponential backoff retry
+// GetVirtualMachineWithRetry invokes az.getVirtualMachine with configurable backoff retry
 func (az *Cloud) GetVirtualMachineWithRetry(name types.NodeName) (compute.VirtualMachine, bool, error) {
 	var machine compute.VirtualMachine
 	var exists bool
@@ -48,7 +48,7 @@ func (az *Cloud) GetVirtualMachineWithRetry(name types.NodeName) (compute.Virtua
 	return machine, exists, err
 }
 
-// CreateOrUpdateSGWithRetry invokes az.SecurityGroupsClient.CreateOrUpdate with exponential backoff retry
+// CreateOrUpdateSGWithRetry invokes az.SecurityGroupsClient.CreateOrUpdate with configurable backoff retry
 func (az *Cloud) CreateOrUpdateSGWithRetry(backoffConfig *wait.Backoff, sg network.SecurityGroup) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -57,7 +57,7 @@ func (az *Cloud) CreateOrUpdateSGWithRetry(backoffConfig *wait.Backoff, sg netwo
 	})
 }
 
-// CreateOrUpdateLBWithRetry invokes az.LoadBalancerClient.CreateOrUpdate with exponential backoff retry
+// CreateOrUpdateLBWithRetry invokes az.LoadBalancerClient.CreateOrUpdate with configurable backoff retry
 func (az *Cloud) CreateOrUpdateLBWithRetry(backoffConfig *wait.Backoff, lb network.LoadBalancer) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -66,7 +66,7 @@ func (az *Cloud) CreateOrUpdateLBWithRetry(backoffConfig *wait.Backoff, lb netwo
 	})
 }
 
-// CreateOrUpdatePIPWithRetry invokes az.PublicIPAddressesClient.CreateOrUpdate with exponential backoff retry
+// CreateOrUpdatePIPWithRetry invokes az.PublicIPAddressesClient.CreateOrUpdate with configurable backoff retry
 func (az *Cloud) CreateOrUpdatePIPWithRetry(backoffConfig *wait.Backoff, pip network.PublicIPAddress) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -75,7 +75,7 @@ func (az *Cloud) CreateOrUpdatePIPWithRetry(backoffConfig *wait.Backoff, pip net
 	})
 }
 
-// CreateOrUpdateInterfaceWithRetry invokes az.PublicIPAddressesClient.CreateOrUpdate with exponential backoff retry
+// CreateOrUpdateInterfaceWithRetry invokes az.PublicIPAddressesClient.CreateOrUpdate with configurable backoff retry
 func (az *Cloud) CreateOrUpdateInterfaceWithRetry(backoffConfig *wait.Backoff, nic network.Interface) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -84,7 +84,7 @@ func (az *Cloud) CreateOrUpdateInterfaceWithRetry(backoffConfig *wait.Backoff, n
 	})
 }
 
-// DeletePublicIPWithRetry invokes az.PublicIPAddressesClient.Delete with exponential backoff retry
+// DeletePublicIPWithRetry invokes az.PublicIPAddressesClient.Delete with configurable backoff retry
 func (az *Cloud) DeletePublicIPWithRetry(backoffConfig *wait.Backoff, pipName string) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -93,7 +93,7 @@ func (az *Cloud) DeletePublicIPWithRetry(backoffConfig *wait.Backoff, pipName st
 	})
 }
 
-// DeleteLBWithRetry invokes az.LoadBalancerClient.Delete with exponential backoff retry
+// DeleteLBWithRetry invokes az.LoadBalancerClient.Delete with configurable backoff retry
 func (az *Cloud) DeleteLBWithRetry(backoffConfig *wait.Backoff, lbName string) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -102,7 +102,7 @@ func (az *Cloud) DeleteLBWithRetry(backoffConfig *wait.Backoff, lbName string) e
 	})
 }
 
-// CreateOrUpdateRouteTableWithRetry invokes az.RouteTablesClient.CreateOrUpdate with exponential backoff retry
+// CreateOrUpdateRouteTableWithRetry invokes az.RouteTablesClient.CreateOrUpdate with configurable backoff retry
 func (az *Cloud) CreateOrUpdateRouteTableWithRetry(backoffConfig *wait.Backoff, routeTable network.RouteTable) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -111,7 +111,7 @@ func (az *Cloud) CreateOrUpdateRouteTableWithRetry(backoffConfig *wait.Backoff, 
 	})
 }
 
-// CreateOrUpdateRouteWithRetry invokes az.RoutesClient.CreateOrUpdate with exponential backoff retry
+// CreateOrUpdateRouteWithRetry invokes az.RoutesClient.CreateOrUpdate with configurable backoff retry
 func (az *Cloud) CreateOrUpdateRouteWithRetry(backoffConfig *wait.Backoff, route network.Route) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -120,7 +120,7 @@ func (az *Cloud) CreateOrUpdateRouteWithRetry(backoffConfig *wait.Backoff, route
 	})
 }
 
-// DeleteRouteWithRetry invokes az.RoutesClient.Delete with exponential backoff retry
+// DeleteRouteWithRetry invokes az.RoutesClient.Delete with configurable backoff retry
 func (az *Cloud) DeleteRouteWithRetry(backoffConfig *wait.Backoff, routeName string) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -129,7 +129,7 @@ func (az *Cloud) DeleteRouteWithRetry(backoffConfig *wait.Backoff, routeName str
 	})
 }
 
-// CreateOrUpdateVMWithRetry invokes az.VirtualMachinesClient.CreateOrUpdate with exponential backoff retry
+// CreateOrUpdateVMWithRetry invokes az.VirtualMachinesClient.CreateOrUpdate with configurable backoff retry
 func (az *Cloud) CreateOrUpdateVMWithRetry(backoffConfig *wait.Backoff, vmName string, newVM compute.VirtualMachine) error {
 	return wait.ExponentialBackoff(*backoffConfig, func() (bool, error) {
 		az.operationPollRateLimiter.Accept()
@@ -147,7 +147,7 @@ func (az *Cloud) getBackoffConfig(resp autorest.Response) *wait.Backoff {
 		// Using a linear (factor=1) backoff strategy for API-directed retry intervals
 		return &wait.Backoff{
 			Duration: retryAfter * time.Second,
-			Steps:    retryAfterRetries,
+			Steps:    retryAfterIterations,
 			Factor:   1,
 		}
 	}

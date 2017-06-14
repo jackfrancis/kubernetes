@@ -67,21 +67,20 @@ func (az *Cloud) AttachDisk(diskName, diskURI string, nodeName types.NodeName, l
 	glog.V(2).Infof("create(%s): vm(%s)", az.ResourceGroup, vmName)
 	az.operationPollRateLimiter.Accept()
 	resp, err := az.VirtualMachinesClient.CreateOrUpdate(az.ResourceGroup, vmName, newVM, nil)
-	if backoffConfig := az.getBackoffConfig(resp); backoffConfig != nil {
-		glog.V(2).Infof("create(%s) backing off: vm(%s)", az.ResourceGroup, vmName)
-		retryErr := az.CreateOrUpdateVMWithRetry(backoffConfig, vmName, newVM)
-		if retryErr != nil {
-			err = retryErr
-			glog.V(2).Infof("create(%s) abort backoff: vm(%s)", az.ResourceGroup, vmName)
-		}
-	}
 	if err != nil {
-		glog.Errorf("azure attach failed, err: %v", err)
-		detail := err.Error()
-		if strings.Contains(detail, errLeaseFailed) {
-			// if lease cannot be acquired, immediately detach the disk and return the original error
-			glog.Infof("failed to acquire disk lease, try detach")
-			az.DetachDiskByName(diskName, diskURI, nodeName)
+		if backoffConfig := az.getBackoffConfig(resp); backoffConfig != nil {
+			glog.V(2).Infof("create(%s) backing off: vm(%s)", az.ResourceGroup, vmName)
+			if retryErr := az.CreateOrUpdateVMWithRetry(backoffConfig, vmName, newVM); retryErr != nil {
+				glog.V(2).Infof("create(%s) abort backoff: vm(%s)", az.ResourceGroup, vmName)
+				// If retries failed, proceed using cleanup logic using original (1st attempt) error context
+				glog.Errorf("azure attach failed, err: %v", err)
+				detail := err.Error()
+				if strings.Contains(detail, errLeaseFailed) {
+					// if lease cannot be acquired, immediately detach the disk and return the original error
+					glog.Infof("failed to acquire disk lease, try detach")
+					az.DetachDiskByName(diskName, diskURI, nodeName)
+				}
+			}
 		}
 	} else {
 		glog.V(4).Infof("azure attach succeeded")
@@ -148,16 +147,15 @@ func (az *Cloud) DetachDiskByName(diskName, diskURI string, nodeName types.NodeN
 	glog.V(2).Infof("create(%s): vm(%s)", az.ResourceGroup, vmName)
 	az.operationPollRateLimiter.Accept()
 	resp, err := az.VirtualMachinesClient.CreateOrUpdate(az.ResourceGroup, vmName, newVM, nil)
-	if backoffConfig := az.getBackoffConfig(resp); backoffConfig != nil {
-		glog.V(2).Infof("create(%s) backing off: vm(%s)", az.ResourceGroup, vmName)
-		retryErr := az.CreateOrUpdateVMWithRetry(backoffConfig, vmName, newVM)
-		if retryErr != nil {
-			err = retryErr
-			glog.V(2).Infof("create(%s) abort backoff: vm(%s)", az.ResourceGroup, vmName)
-		}
-	}
 	if err != nil {
-		glog.Errorf("azure disk detach failed, err: %v", err)
+		if backoffConfig := az.getBackoffConfig(resp); backoffConfig != nil {
+			glog.V(2).Infof("create(%s) backing off: vm(%s)", az.ResourceGroup, vmName)
+			if retryErr := az.CreateOrUpdateVMWithRetry(backoffConfig, vmName, newVM); retryErr != nil {
+				glog.V(2).Infof("create(%s) abort backoff: vm(%s)", az.ResourceGroup, vmName)
+				glog.Errorf("azure disk detach failed, err: %v", err)
+				err = retryErr
+			}
+		}
 	} else {
 		glog.V(4).Infof("azure disk detach succeeded")
 	}
