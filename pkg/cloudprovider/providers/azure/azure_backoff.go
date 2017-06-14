@@ -186,8 +186,11 @@ func processRetryResponse(resp autorest.Response, backoffConfig *wait.Backoff, e
 		glog.V(2).Infof("backoff: success, HTTP response=%d", resp.StatusCode)
 		return true, nil
 	}
-	glog.Errorf("backoff: failure, HTTP response=%d, err=%v", resp.StatusCode, err)
-
+	if isRetryResponse(resp.StatusCode) {
+		glog.Errorf("backoff: failure, will retry, HTTP response=%d, err=%v", resp.StatusCode, err)
+		// suppress the error object so that backoff process continues
+	    return false, nil
+	}
 	retryAfter := getRetryAfter(resp)
 	// If the API requested a 'Retry-After' delay, & if this is a non-exponential backoff
 	// we want to add add'l delay to enforce the API request, if API val > backoff config.
@@ -195,9 +198,8 @@ func processRetryResponse(resp autorest.Response, backoffConfig *wait.Backoff, e
 	if retryAfter > 0 && backoffConfig.Factor == 1 {
 		time.Sleep(retryAfter - backoffConfig.Duration)
 	}
-
-	// suppress the error object so that backoff process continues
-	return false, nil
+	// Fall-through: return error and abort backoff process
+	return false, err
 }
 
 // isSuccessHTTPResponse determines if the response from an HTTP request suggests success
