@@ -221,33 +221,17 @@ func GetEtcdPodSpec(cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmapi.A
 		etcdVolumeName:  staticpodutil.NewVolume(etcdVolumeName, cfg.Etcd.Local.DataDir, &pathType),
 		certsVolumeName: staticpodutil.NewVolume(certsVolumeName, cfg.CertificatesDir+"/etcd", &pathType),
 	}
-	// probeHostname returns the correct localhost IP address family based on the endpoint AdvertiseAddress
-	probeHostname, probePort, probeScheme := staticpodutil.GetEtcdProbeEndpoint(&cfg.Etcd, utilsnet.IsIPv6String(endpoint.AdvertiseAddress))
-	return staticpodutil.ComponentPod(
-		v1.Container{
-			Name:            kubeadmconstants.Etcd,
-			Command:         getEtcdCommand(cfg, endpoint, nodeName, initialCluster),
-			Image:           images.GetEtcdImage(cfg),
-			ImagePullPolicy: v1.PullIfNotPresent,
-			// Mount the etcd datadir path read-write so etcd can store data in a more persistent manner
-			VolumeMounts: []v1.VolumeMount{
-				staticpodutil.NewVolumeMount(etcdVolumeName, cfg.Etcd.Local.DataDir, false),
-				staticpodutil.NewVolumeMount(certsVolumeName, cfg.CertificatesDir+"/etcd", false),
-			},
-			Resources: v1.ResourceRequirements{
-				Requests: v1.ResourceList{
-					v1.ResourceCPU:              resource.MustParse("100m"),
-					v1.ResourceMemory:           resource.MustParse("100Mi"),
-					v1.ResourceEphemeralStorage: resource.MustParse("100Mi"),
-				},
-			},
-			LivenessProbe: staticpodutil.LivenessProbe(probeHostname, "/health", probePort, probeScheme),
-			StartupProbe:  staticpodutil.StartupProbe(probeHostname, "/health", probePort, probeScheme, cfg.APIServer.TimeoutForControlPlane),
-		},
+	etcdPodContainer := getEtcdPodContainer(cfg, endpoint, nodeName, initialCluster)
+	podWithContainer := staticpodutil.ComponentPod(
+		etcdPodContainer,
 		etcdMounts,
 		// etcd will listen on the advertise address of the API server, in a different port (2379)
 		map[string]string{kubeadmconstants.EtcdAdvertiseClientUrlsAnnotationKey: etcdutil.GetClientURL(endpoint)},
 	)
+	etcdInitPodContainer := getEtcdPodContainer(cfg, endpoint, nodeName, initialCluster)
+	etcdInitPodContainer.Command = []string{"etcd", "--version"}
+	podWithContainer.Spec.InitContainers = []v1.Container{etcdInitPodContainer}
+	return podWithContainer
 }
 
 // getEtcdCommand builds the right etcd command from the given config object
@@ -292,4 +276,29 @@ func getEtcdCommand(cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmapi.A
 	command := []string{"etcd"}
 	command = append(command, kubeadmutil.BuildArgumentListFromMap(defaultArguments, cfg.Etcd.Local.ExtraArgs)...)
 	return command
+}
+
+func getEtcdPodContainer(cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmapi.APIEndpoint, nodeName string, initialCluster []etcdutil.Member) v1.Container {
+	// probeHostname returns the correct localhost IP address family based on the endpoint AdvertiseAddress
+	probeHostname, probePort, probeScheme := staticpodutil.GetEtcdProbeEndpoint(&cfg.Etcd, utilsnet.IsIPv6String(endpoint.AdvertiseAddress))
+	return v1.Container{
+		Name:            kubeadmconstants.Etcd,
+		Command:         getEtcdCommand(cfg, endpoint, nodeName, initialCluster),
+		Image:           images.GetEtcdImage(cfg),
+		ImagePullPolicy: v1.PullIfNotPresent,
+		// Mount the etcd datadir path read-write so etcd can store data in a more persistent manner
+		VolumeMounts: []v1.VolumeMount{
+			staticpodutil.NewVolumeMount(etcdVolumeName, cfg.Etcd.Local.DataDir, false),
+			staticpodutil.NewVolumeMount(certsVolumeName, cfg.CertificatesDir+"/etcd", false),
+		},
+		Resources: v1.ResourceRequirements{
+			Requests: v1.ResourceList{
+				v1.ResourceCPU:              resource.MustParse("100m"),
+				v1.ResourceMemory:           resource.MustParse("100Mi"),
+				v1.ResourceEphemeralStorage: resource.MustParse("100Mi"),
+			},
+		},
+		LivenessProbe: staticpodutil.LivenessProbe(probeHostname, "/health", probePort, probeScheme),
+		StartupProbe:  staticpodutil.StartupProbe(probeHostname, "/health", probePort, probeScheme, cfg.APIServer.TimeoutForControlPlane),
+	}
 }
