@@ -232,6 +232,7 @@ func TestKubernetesIsCIVersion(t *testing.T) {
 		{"v1.0.0", false},
 		{"release/v1.0.0", false},
 		// CI builds
+		{"v1.9.0-alpha.1.123+acbcbfd53bfa0a", true},
 		{"ci/latest-1", true},
 		{"ci/v1.9.0-alpha.1.123+acbcbfd53bfa0a", true},
 	}

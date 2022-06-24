@@ -144,6 +144,14 @@ func KubernetesIsCIVersion(version string) bool {
 	if len(subs) == 1 && len(subs[0]) == 4 && strings.HasPrefix(subs[0][2], "ci") {
 		return true
 	}
+	ver, err := versionutil.ParseSemantic(version)
+	if err != nil {
+		klog.Warningf("could not parse semantic version %s: %v", version, err)
+		return false
+	}
+	if len(ver.PreRelease()) != 0 {
+		return true
+	}
 	return false
 }
 
