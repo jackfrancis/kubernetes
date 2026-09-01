@@ -210,6 +210,7 @@ func (c *mutationCache) ByIndex(name string, indexKey string) ([]interface{}, er
 	if err != nil {
 		return nil, err
 	}
+	fn := c.indexer.GetIndexers()[name]
 	var items []interface{}
 	keySet := sets.NewString()
 	for _, key := range keys {
@@ -225,14 +226,20 @@ func (c *mutationCache) ByIndex(name string, indexKey string) ([]interface{}, er
 		// adding the same key again in our if c.includeAdds logic below.
 		keySet.Insert(key)
 		if objRuntime, ok := obj.(runtime.Object); ok {
-			items = append(items, c.newerObject(key, objRuntime))
-		} else {
+			obj = c.newerObject(key, objRuntime)
+		}
+		elements, err := fn(obj)
+		if err != nil {
+			return nil, err
+		}
+		// The selected object may differ from the version observed by IndexKeys.
+		// Include it only if it still matches the queried index value.
+		if sets.New(elements...).Has(indexKey) {
 			items = append(items, obj)
 		}
 	}
 
 	if c.includeAdds {
-		fn := c.indexer.GetIndexers()[name]
 		// Keys() is returned oldest to newest, so full traversal does not alter the LRU behavior
 		for _, key := range c.mutationCache.Keys() {
 			updated, ok := c.mutationCache.Get(key)
@@ -244,6 +251,21 @@ func (c *mutationCache) ByIndex(name string, indexKey string) ([]interface{}, er
 			}
 			if _, ok := updated.(*tombstone); ok {
 				continue
+			}
+			// A mutation not handled by the initial indexer pass
+			// may still have a corresponding indexer object under
+			// a different index value. Select the newer version
+			// before evaluating it against this query.
+			backing, exists, err := c.indexer.GetByKey(key.(string))
+			if err != nil {
+				return nil, err
+			}
+			if exists {
+				if backingRuntime, ok := backing.(runtime.Object); ok {
+					updated = c.newerObject(key.(string), backingRuntime)
+				} else {
+					updated = backing
+				}
 			}
 			elements, err := fn(updated)
 			if err != nil {

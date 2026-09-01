@@ -294,3 +294,215 @@ func TestMutationCacheByIndexConcurrentDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []interface{}{replacementPod}, items)
 }
+
+func TestMutationCacheByIndexMutationChangesIndex(t *testing.T) {
+	const (
+		indexName = "by-foo"
+		fooLabel  = "foo"
+	)
+	tests := map[string]struct {
+		indexerResourceVersion       string
+		indexerLabelValue            string
+		mutationCacheResourceVersion string
+		mutationCacheLabelValue      string
+		queriedIndexValue            string
+		includeAdds                  bool
+		want                         []string
+	}{
+		// The mutation cache contains a newer version whose indexed label
+		// did not change.
+		// A query for foo=a should return the newer mutation.
+		"newer-mutation-same-index-without-include-adds": {
+			indexerResourceVersion:       "1",
+			indexerLabelValue:            "a",
+			mutationCacheResourceVersion: "2",
+			mutationCacheLabelValue:      "a",
+			queriedIndexValue:            "a",
+			includeAdds:                  false,
+			want:                         []string{"2/a"},
+		},
+		// Same scenario as previous, prove that includeAdds has no effect.
+		"newer-mutation-same-index-with-include-adds": {
+			indexerResourceVersion:       "1",
+			indexerLabelValue:            "a",
+			mutationCacheResourceVersion: "2",
+			mutationCacheLabelValue:      "a",
+			queriedIndexValue:            "a",
+			includeAdds:                  true,
+			want:                         []string{"2/a"},
+		},
+		// The mutation cache contains a newer version whose indexed label
+		// changed from foo=a to foo=b.
+		// A query for foo=a should return nothing.
+		"newer-mutation-stops-matching-without-include-adds": {
+			indexerResourceVersion:       "1",
+			indexerLabelValue:            "a",
+			mutationCacheResourceVersion: "2",
+			mutationCacheLabelValue:      "b",
+			queriedIndexValue:            "a",
+			includeAdds:                  false,
+			want:                         []string{},
+		},
+		// Same scenario as previous, prove that includeAdds has no effect.
+		"newer-mutation-stops-matching-with-include-adds": {
+			indexerResourceVersion:       "1",
+			indexerLabelValue:            "a",
+			mutationCacheResourceVersion: "2",
+			mutationCacheLabelValue:      "b",
+			queriedIndexValue:            "a",
+			includeAdds:                  true,
+			want:                         []string{},
+		},
+		// The mutation cache contains a newer version whose indexed label
+		// changed from foo=a to foo=b.
+		// A query for foo=b should return nothing
+		// because includeAdds=false.
+		"newer-mutation-starts-matching-without-include-adds": {
+			indexerResourceVersion:       "1",
+			indexerLabelValue:            "a",
+			mutationCacheResourceVersion: "2",
+			mutationCacheLabelValue:      "b",
+			queriedIndexValue:            "b",
+			includeAdds:                  false,
+			want:                         []string{},
+		},
+		// The mutation cache contains a newer version whose indexed label
+		// changed from foo=a to foo=b.
+		// A query for foo=b should return the newer mutation
+		// because includeAdds=true.
+		"newer-mutation-starts-matching-with-include-adds": {
+			indexerResourceVersion:       "1",
+			indexerLabelValue:            "a",
+			mutationCacheResourceVersion: "2",
+			mutationCacheLabelValue:      "b",
+			queriedIndexValue:            "b",
+			includeAdds:                  true,
+			want:                         []string{"2/b"},
+		},
+		// Stale mutation cache scenarios
+
+		// The mutation cache contains an older version whose indexed label
+		// is the same as the indexer's.
+		// A query for foo=a should return the indexer's object.
+		"older-mutation-same-index-without-include-adds": {
+			indexerResourceVersion:       "2",
+			indexerLabelValue:            "a",
+			mutationCacheResourceVersion: "1",
+			mutationCacheLabelValue:      "a",
+			queriedIndexValue:            "a",
+			includeAdds:                  false,
+			want:                         []string{"2/a"},
+		},
+		// Same scenario as previous, prove that includeAdds has no effect.
+		"older-mutation-same-index-with-include-adds": {
+			indexerResourceVersion:       "2",
+			indexerLabelValue:            "a",
+			mutationCacheResourceVersion: "1",
+			mutationCacheLabelValue:      "a",
+			queriedIndexValue:            "a",
+			includeAdds:                  true,
+			want:                         []string{"2/a"},
+		},
+		// The older mutation matches foo=a, but the newer indexer object
+		// has foo=b. A query for foo=a should return nothing.
+		"older-mutation-matches-query-without-include-adds": {
+			indexerResourceVersion:       "2",
+			indexerLabelValue:            "b",
+			mutationCacheResourceVersion: "1",
+			mutationCacheLabelValue:      "a",
+			queriedIndexValue:            "a",
+			includeAdds:                  false,
+			want:                         []string{},
+		},
+		// Same scenario as previous, prove that includeAdds does not allow
+		// the older mutation to override the newer indexer object.
+		"older-mutation-matches-query-with-include-adds": {
+			indexerResourceVersion:       "2",
+			indexerLabelValue:            "b",
+			mutationCacheResourceVersion: "1",
+			mutationCacheLabelValue:      "a",
+			queriedIndexValue:            "a",
+			includeAdds:                  true,
+			want:                         []string{},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			// Make a new indexer.
+			indexer := NewIndexer(MetaNamespaceKeyFunc, Indexers{
+				indexName: func(obj interface{}) ([]string, error) {
+					return []string{obj.(*v1.Pod).Labels[fooLabel]}, nil
+				},
+			})
+			// Make a pod "testpod" with the indexer resource version
+			// and test-specific label value...
+			indexerPod := makeMutationTestPod("testpod", "uid-1", tc.indexerResourceVersion)
+			indexerPod.Labels = map[string]string{fooLabel: tc.indexerLabelValue}
+			// ... and add it to the indexer.
+			require.NoError(t, indexer.Add(indexerPod))
+
+			// Keep the indexer object unchanged while recording a separate
+			// version in the mutation cache.
+			mc := NewIntegerResourceVersionMutationCache(klog.Background(), indexer, indexer, time.Minute, tc.includeAdds)
+			mutation := makeMutationTestPod("testpod", "uid-1", tc.mutationCacheResourceVersion)
+			mutation.Labels = map[string]string{fooLabel: tc.mutationCacheLabelValue}
+			// Record the mutation.
+			// We are not simulating an informer update to indexer...
+			mc.Mutation(mutation)
+
+			// ... so ByIndex is responsible for evaluating
+			// the query using both the indexer and the mutation cache.
+			items, err := mc.ByIndex(indexName, tc.queriedIndexValue)
+			require.NoError(t, err)
+			// Compare the return from ByIndex with the expected result.
+			got := make([]string, 0, len(items))
+			for _, item := range items {
+				pod := item.(*v1.Pod)
+				got = append(got, pod.ResourceVersion+"/"+pod.Labels[fooLabel])
+			}
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+type updateOnGetIndexer struct {
+	Indexer
+	updateOnNextGet interface{}
+}
+
+func (i *updateOnGetIndexer) GetByKey(key string) (interface{}, bool, error) {
+	if i.updateOnNextGet != nil {
+		if err := i.Indexer.Update(i.updateOnNextGet); err != nil {
+			return nil, false, err
+		}
+		i.updateOnNextGet = nil
+	}
+	return i.Indexer.GetByKey(key)
+}
+
+func TestMutationCacheByIndexConcurrentIndexChange(t *testing.T) {
+	const (
+		indexName = "by-foo"
+		fooLabel  = "foo"
+	)
+	indexer := &updateOnGetIndexer{
+		Indexer: NewIndexer(MetaNamespaceKeyFunc, Indexers{
+			indexName: func(obj interface{}) ([]string, error) {
+				return []string{obj.(*v1.Pod).Labels[fooLabel]}, nil
+			},
+		}),
+	}
+	originalPod := makeMutationTestPod("pod", "uid-1", "1")
+	originalPod.Labels = map[string]string{fooLabel: "old"}
+	require.NoError(t, indexer.Add(originalPod))
+
+	updatedPod := makeMutationTestPod("pod", "uid-1", "2")
+	updatedPod.Labels = map[string]string{fooLabel: "new"}
+	indexer.updateOnNextGet = updatedPod
+	mc := NewIntegerResourceVersionMutationCache(klog.Background(), indexer, indexer, time.Minute, false)
+
+	items, err := mc.ByIndex(indexName, "old")
+	require.NoError(t, err)
+	require.Empty(t, items)
+}
