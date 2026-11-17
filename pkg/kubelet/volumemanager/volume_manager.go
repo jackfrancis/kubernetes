@@ -56,6 +56,7 @@ import (
 	"k8s.io/kubernetes/pkg/volume/util/operationexecutor"
 	"k8s.io/kubernetes/pkg/volume/util/types"
 	"k8s.io/kubernetes/pkg/volume/util/volumepathhandler"
+	"k8s.io/utils/clock"
 )
 
 const (
@@ -235,7 +236,8 @@ func NewVolumeManager(
 		vm.actualStateOfWorld,
 		csiMigratedPluginManager,
 		intreeToCSITranslator,
-		volumePluginMgr)
+		volumePluginMgr,
+		clock.RealClock{})
 	vm.reconciler = reconciler.NewReconciler(
 		kubeClient,
 		controllerAttachDetachEnabled,
@@ -582,12 +584,24 @@ func (vm *volumeManager) getUnattachedVolumes(uniquePodName types.UniquePodName)
 	return unattachedVolumes
 }
 
+func podVolumeErrorMessage(errs []error) string {
+	messages := make([]string, len(errs))
+	for i, err := range errs {
+		messages[i] = err.Error()
+	}
+	return strings.Join(messages, "; ")
+}
+
 // verifyVolumesMountedFunc returns a method that returns true when all expected
 // volumes are mounted.
 func (vm *volumeManager) verifyVolumesMountedFunc(podName types.UniquePodName, expectedVolumes []string) wait.ConditionWithContextFunc {
 	return func(_ context.Context) (done bool, err error) {
 		if errs := vm.desiredStateOfWorld.PopPodErrors(podName); len(errs) > 0 {
-			return true, errors.New(strings.Join(errs, "; "))
+			err := errors.New(podVolumeErrorMessage(errs))
+			if started, deferred := container.LatestBackoffStart(utilerrors.NewAggregate(errs)); deferred {
+				err = container.NewBackoffStartError(err, started)
+			}
+			return true, err
 		}
 		return len(vm.getUnmountedVolumes(podName, expectedVolumes)) == 0, nil
 	}
@@ -598,7 +612,8 @@ func (vm *volumeManager) verifyVolumesMountedFunc(podName types.UniquePodName, e
 func (vm *volumeManager) verifyVolumesUnmountedFunc(podName types.UniquePodName) wait.ConditionWithContextFunc {
 	return func(_ context.Context) (done bool, err error) {
 		if errs := vm.desiredStateOfWorld.PopPodErrors(podName); len(errs) > 0 {
-			return true, errors.New(strings.Join(errs, "; "))
+			// A startup failure must not shorten termination retries.
+			return true, errors.New(podVolumeErrorMessage(errs))
 		}
 		return !vm.actualStateOfWorld.PodHasMountedVolumes(podName), nil
 	}

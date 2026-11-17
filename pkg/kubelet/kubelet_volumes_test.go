@@ -19,21 +19,163 @@ package kubelet
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	core "k8s.io/client-go/testing"
 	"k8s.io/ktesting"
+	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 	"k8s.io/kubernetes/pkg/volume/util"
 )
+
+func prepareVolumeAuthorizationPod(t *testing.T) (*TestKubelet, *v1.Pod) {
+	t.Helper()
+	testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
+	t.Cleanup(testKubelet.Cleanup)
+
+	pvc := &v1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: "test", UID: "claim-uid"},
+		Spec:       v1.PersistentVolumeClaimSpec{VolumeName: "volume"},
+		Status:     v1.PersistentVolumeClaimStatus{Phase: v1.ClaimBound},
+	}
+	pv := &v1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: pvc.Spec.VolumeName},
+		Spec: v1.PersistentVolumeSpec{
+			ClaimRef: &v1.ObjectReference{Namespace: pvc.Namespace, Name: pvc.Name, UID: pvc.UID},
+			PersistentVolumeSource: v1.PersistentVolumeSource{
+				HostPath: &v1.HostPathVolumeSource{Path: "/fake-volume"},
+			},
+		},
+	}
+	pod := podWithUIDNameNsSpec("pod-uid", "pod", pvc.Namespace, v1.PodSpec{
+		NodeName: string(testKubelet.kubelet.nodeName),
+		Containers: []v1.Container{{
+			Name:         "container",
+			Image:        "fake-image",
+			VolumeMounts: []v1.VolumeMount{{Name: "volume", MountPath: "/mnt"}},
+		}},
+		Volumes: []v1.Volume{{
+			Name: "volume",
+			VolumeSource: v1.VolumeSource{
+				PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{ClaimName: pvc.Name},
+			},
+		}},
+	})
+	testKubelet.fakeKubeClient.AddReactor("get", "persistentvolumeclaims", func(core.Action) (bool, runtime.Object, error) {
+		return true, pvc, nil
+	})
+	testKubelet.fakeKubeClient.AddReactor("get", "persistentvolumes", func(core.Action) (bool, runtime.Object, error) {
+		return true, pv, nil
+	})
+	testKubelet.kubelet.podManager.AddPod(pod)
+	return testKubelet, pod
+}
+
+func TestPodVolumeAuthorizationErrorBackoff(t *testing.T) {
+	for _, resource := range []string{"persistentvolumeclaims", "persistentvolumes"} {
+		t.Run(resource, func(t *testing.T) {
+			logger, tCtx := ktesting.NewTestContext(t)
+			testKubelet, pod := prepareVolumeAuthorizationPod(t)
+			kubelet := testKubelet.kubelet
+			ctx, cancel := context.WithTimeout(tCtx, 10*time.Second)
+			defer cancel()
+			testKubelet.fakeKubeClient.PrependReactor("get", resource, func(action core.Action) (bool, runtime.Object, error) {
+				return true, nil, apierrors.NewForbidden(
+					action.GetResource().GroupResource(), action.(core.GetAction).GetName(), fmt.Errorf("no relationship found"))
+			})
+			go kubelet.volumeManager.Run(ctx, kubelet.sourcesReady)
+
+			terminal, _, err := kubelet.SyncPod(ctx, kubetypes.SyncPodCreate, pod, nil, &kubecontainer.PodStatus{})
+			require.False(t, terminal)
+			require.ErrorContains(t, err, "is forbidden: no relationship found")
+			require.ErrorContains(t, err, "failed to process volumes=[volume]")
+			testKubelet.fakeRuntime.AssertCallCounts("SyncPod", 0)
+			require.Empty(t, kubelet.volumeManager.GetMountedVolumesForPod(util.GetUniquePodName(pod)))
+			started, deferred := kubecontainer.LatestBackoffStart(err)
+			require.True(t, deferred, "the real volume error must retain its original failure time")
+			require.False(t, kubecontainer.IsBackoffError(err), "deferred failures still count as sync errors")
+
+			// Exercise the worker with the real storage error, not a synthetic generic error.
+			workers, _, _ := createPodWorkers(logger)
+			elapsed := 4 * time.Second
+			testKubelet.fakeClock.SetTime(started.Add(elapsed))
+			workers.clock = testKubelet.fakeClock
+			workers.backOffPeriod = backOffPeriod
+			workers.resyncInterval = time.Minute
+			workers.completeWork(logger, pod.UID, false, err)
+			items := workers.workQueue.(*fakeQueue).Items()
+			require.Len(t, items, 1)
+			require.Equal(t, pod.UID, items[0].UID)
+			require.GreaterOrEqual(t, items[0].Delay, backOffPeriod-elapsed)
+			require.LessOrEqual(t, items[0].Delay,
+				backOffPeriod+time.Duration(float64(backOffPeriod)*workerBackOffPeriodJitterFactor)-elapsed)
+		})
+	}
+}
+
+func TestPodVolumeLookupCancellation(t *testing.T) {
+	for _, resource := range []string{"persistentvolumeclaims", "persistentvolumes"} {
+		t.Run(resource, func(t *testing.T) {
+			tCtx := ktesting.Init(t)
+			testKubelet, pod := prepareVolumeAuthorizationPod(t)
+			kubelet := testKubelet.kubelet
+			managerCtx, stopManager := context.WithTimeout(tCtx, 10*time.Second)
+			defer stopManager()
+			syncCtx, cancelSync := context.WithCancel(managerCtx)
+			defer cancelSync()
+			getStarted := make(chan struct{})
+			var firstGet sync.Once
+			testKubelet.fakeKubeClient.PrependReactor("get", resource, func(core.Action) (bool, runtime.Object, error) {
+				firstGet.Do(func() { close(getStarted) })
+				<-managerCtx.Done()
+				return true, nil, managerCtx.Err()
+			})
+			go kubelet.volumeManager.Run(managerCtx, kubelet.sourcesReady)
+
+			result := make(chan error, 1)
+			syncDone := make(chan struct{})
+			go func() {
+				defer close(syncDone)
+				_, _, err := kubelet.SyncPod(syncCtx, kubetypes.SyncPodCreate, pod, nil, &kubecontainer.PodStatus{})
+				result <- err
+			}()
+			defer func() {
+				cancelSync()
+				stopManager()
+				<-syncDone
+			}()
+
+			select {
+			case <-getStarted:
+			case err := <-result:
+				t.Fatalf("Pod sync returned before the %s lookup started: %v", resource, err)
+			case <-managerCtx.Done():
+				t.Fatalf("%s lookup did not start: %v", resource, managerCtx.Err())
+			}
+
+			// Lookups use the manager context; canceling a Pod sync must not wait for them.
+			cancelSync()
+			select {
+			case err := <-result:
+				require.ErrorIs(t, err, context.Canceled)
+			case <-managerCtx.Done():
+				t.Fatalf("Pod sync did not stop while the %s lookup was blocked", resource)
+			}
+			testKubelet.fakeRuntime.AssertCallCounts("SyncPod", 0)
+		})
+	}
+}
 
 func TestListVolumesForPod(t *testing.T) {
 	if testing.Short() {

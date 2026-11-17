@@ -18,6 +18,7 @@ package volumemanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,7 +48,9 @@ import (
 	"k8s.io/ktesting"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/config"
+	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	kubepod "k8s.io/kubernetes/pkg/kubelet/pod"
+	"k8s.io/kubernetes/pkg/kubelet/volumemanager/cache"
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/emptydir"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
@@ -60,6 +63,42 @@ import (
 const (
 	testHostname = "test-hostname"
 )
+
+func TestVolumeWaitPreservesDeferredFailureTiming(t *testing.T) {
+	for _, unmount := range []bool{false, true} {
+		for _, fresh := range []bool{false, true} {
+			t.Run(fmt.Sprintf("unmount=%t/fresh=%t", unmount, fresh), func(t *testing.T) {
+				vm := &volumeManager{desiredStateOfWorld: cache.NewDesiredStateOfWorld(nil, nil)}
+				podName := types.UniquePodName("pod")
+				started := time.Unix(100, 0)
+				vm.desiredStateOfWorld.AddErrorToPodWithBackoffStart(podName, context.DeadlineExceeded.Error(), started)
+				vm.desiredStateOfWorld.AddErrorToPodWithBackoffStart(podName, "lookup forbidden", started.Add(-time.Second))
+				expectedMessage := "context deadline exceeded; lookup forbidden"
+				if fresh {
+					vm.desiredStateOfWorld.AddErrorToPod(podName, "new volume failure")
+					expectedMessage += "; new volume failure"
+				}
+				verify := vm.verifyVolumesMountedFunc(podName, []string{"volume"})
+				if unmount {
+					verify = vm.verifyVolumesUnmountedFunc(podName)
+				}
+				done, err := verify(context.Background())
+				require.True(t, done)
+				require.EqualError(t, err, expectedMessage)
+				origin, deferred := kubecontainer.LatestBackoffStart(err)
+				require.Equal(t, !fresh && !unmount, deferred,
+					"startup timing must not shorten unmount or termination retries")
+				if deferred {
+					require.Equal(t, started, origin)
+				}
+				require.False(t, errors.Is(err, context.DeadlineExceeded),
+					"a retry-budget failure must not become cancellation of the volume wait")
+				require.False(t, wait.Interrupted(err))
+				require.False(t, kubecontainer.IsBackoffError(err), "exhausted failures must remain visible to error metrics")
+			})
+		}
+	}
+}
 
 func TestGetMountedVolumesForPodAndGetVolumesInUse(t *testing.T) {
 	_, ctx := ktesting.NewTestContext(t)

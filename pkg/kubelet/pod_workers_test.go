@@ -916,6 +916,7 @@ func TestCompleteWork_Enqueue(t *testing.T) {
 		syncErr         error
 		expectedMin     time.Duration
 		jitterFactor    float64
+		elapsed         time.Duration
 	}{
 		{
 			name:            "phase transition requeues for immediate processing",
@@ -933,6 +934,42 @@ func TestCompleteWork_Enqueue(t *testing.T) {
 			name:         "generic error uses default backoff",
 			syncErr:      errors.New("generic error"),
 			expectedMin:  defaultBackoff,
+			jitterFactor: workerBackOffPeriodJitterFactor,
+		},
+		{
+			name:         "deferred error credits time already spent without narrowing normal jitter",
+			syncErr:      kubecontainer.NewBackoffStartError(errors.New("deferred volume error"), clock.Now().Add(-4*time.Second)),
+			expectedMin:  defaultBackoff,
+			jitterFactor: workerBackOffPeriodJitterFactor,
+			elapsed:      4 * time.Second,
+		},
+		{
+			name:        "deferred error past the normal backoff does not start another delay",
+			syncErr:     kubecontainer.NewBackoffStartError(errors.New("deferred volume error"), clock.Now().Add(-20*time.Second)),
+			expectedMin: 0,
+		},
+		{
+			name: "fresh aggregate error retains the full normal backoff",
+			syncErr: utilerrors.NewAggregate([]error{
+				kubecontainer.NewBackoffStartError(errors.New("deferred volume error"), clock.Now().Add(-20*time.Second)),
+				errors.New("fresh error"),
+			}),
+			expectedMin:  defaultBackoff,
+			jitterFactor: workerBackOffPeriodJitterFactor,
+		},
+		{
+			name:         "a future origin cannot lengthen the normal backoff",
+			syncErr:      kubecontainer.NewBackoffStartError(errors.New("deferred volume error"), clock.Now().Add(time.Minute)),
+			expectedMin:  defaultBackoff,
+			jitterFactor: workerBackOffPeriodJitterFactor,
+		},
+		{
+			name: "explicit backoff expiration takes precedence over a deferred origin",
+			syncErr: kubecontainer.NewBackoffError(
+				kubecontainer.NewBackoffStartError(errors.New("deferred error"), clock.Now().Add(-20*time.Second)),
+				clock.Now().Add(5*time.Second),
+			),
+			expectedMin:  5 * time.Second,
 			jitterFactor: workerBackOffPeriodJitterFactor,
 		},
 		{
@@ -1038,9 +1075,10 @@ func TestCompleteWork_Enqueue(t *testing.T) {
 				t.Errorf("expected pod UID %q, got %q", podUID, item.UID)
 			}
 
-			expectedMax := tc.expectedMin + time.Duration(float64(tc.expectedMin)*tc.jitterFactor)
-			if item.Delay < tc.expectedMin || item.Delay > expectedMax {
-				t.Errorf("expected delay in range [%v, %v], got %v", tc.expectedMin, expectedMax, item.Delay)
+			expectedMin := max(0, tc.expectedMin-tc.elapsed)
+			expectedMax := max(0, tc.expectedMin+time.Duration(float64(tc.expectedMin)*tc.jitterFactor)-tc.elapsed)
+			if item.Delay < expectedMin || item.Delay > expectedMax {
+				t.Errorf("expected delay in range [%v, %v], got %v", expectedMin, expectedMax, item.Delay)
 			}
 		})
 	}
@@ -2726,6 +2764,12 @@ func TestPodWorkerErrorsMetric(t *testing.T) {
 			name:        "sync pod create error increments create label",
 			updateType:  kubetypes.SyncPodCreate,
 			syncPodErr:  syncErr,
+			wantMetrics: `kubelet_pod_worker_errors_total{operation_type="create"} 1`,
+		},
+		{
+			name:        "deferred volume failure still increments create label",
+			updateType:  kubetypes.SyncPodCreate,
+			syncPodErr:  kubecontainer.NewBackoffStartError(syncErr, time.Now().Add(-20*time.Second)),
 			wantMetrics: `kubelet_pod_worker_errors_total{operation_type="create"} 1`,
 		},
 		{

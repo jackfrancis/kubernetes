@@ -1,0 +1,1260 @@
+{
+  "schema_version": 1,
+  "prepared_at": "2026-11-17T15:48:58.440Z",
+  "problem_statement": "burst starting sandboxes can take longer time than expected (like over 17s)",
+  "purpose": "Portable, aggregate-only input for independent model review; not a new experiment or a claim that the original latency problem is fixed.",
+  "baseline_commit": "4518cd0c14fa4014eb4bbeac16c89ec7944baf8f",
+  "clocks": {
+    "incident_ready": "Client Pod-create request timestamp to collector-observed Ready; includes scheduling, pre-runtime work, runtime/container work and observation effects.",
+    "incident_sandbox": "Difference between first matching node-journal RunPodSandbox start and first returns-sandbox-ID entry for a Pod UID; not the entire creation-to-sandbox path.",
+    "harness_healthy": "Submission to first successful SyncPod, not real CRI duration or readiness.",
+    "harness_recovery": "Simulated authorization availability to first successful SyncPod, not first-denial-to-recovery.",
+    "cohort_p95": "Nearest rank ceil(n * 0.95) - 1.",
+    "experiment_summary": "Usually median of three per-run p95 values, not pooled p95; incomplete groups are censored."
+  },
+  "incident": {
+    "source_id": "E01",
+    "source_type": "User-supplied incident report, collector source and stored summaries; private source material is not included.",
+    "report_sha256": "7cef34f1ad54af4b7b2b5d1bb99e67f756c273d89f49582e269ccb3256be9dbf",
+    "collector_sha256": "554a21e0a6c437a761b0b57fd3f903d96313c35f2f386f0eec45c9cdd0f6d8be",
+    "reported_original_volume_mode": "Raw block, ReadWriteOncePod",
+    "successful_minimal_repro": "Static bound PV/PVC, built-in hostPath, read-only Pod mount, runc, synchronized bursts",
+    "reported_retry_interval_seconds": [
+      11.43,
+      16.2
+    ],
+    "reported_failure_split": {
+      "pvc_get_403": 4,
+      "pv_get_403": 1
+    },
+    "reported_rolling_controls": {
+      "trials": 876,
+      "startup_denials": 0,
+      "post_delete_relationship_403s": 129,
+      "csi_raw_block_rwop_trials": 68
+    },
+    "clock_caveats": [
+      "These aggregates are recomputed from supplied summaries, not a new workload run.",
+      "The journal collector selects the first matching start and return per Pod; this report did not revalidate every journal pair.",
+      "Observed Ready is not identical to the exact Ready transition timestamp, CRI client RPC duration, or sandbox completion time.",
+      "Pools and workload revisions are not interchangeable controlled experiments."
+    ],
+    "cohorts": [
+      {
+        "id": "A0",
+        "description": "10-Pod comparison",
+        "runtime": "runc",
+        "pod_count": 10,
+        "startup_relationship_denials": 0,
+        "creation_request_to_observed_ready": {
+          "count": 10,
+          "p50_ms": 1475.831,
+          "p95_ms": 1769.3719999999998,
+          "maximum_ms": 1769.3719999999998,
+          "over_17000_ms": 0
+        },
+        "journal_sandbox_start_to_return": {
+          "count": 10,
+          "p50_ms": 521.681884765625,
+          "p95_ms": 772.27685546875,
+          "maximum_ms": 772.27685546875,
+          "over_17000_ms": 0
+        },
+        "workload_deletion_during_observation": false,
+        "summary_sha256": "cbf10d0892ca9dd0f9c5f5619caee85cc55f1f8e6498cb62a04f47486963a510",
+        "observation_sha256": "88feab158cb64879871c8c23d8d264561262bde3aebf007202e2cb71e8f67e7e"
+      },
+      {
+        "id": "A1",
+        "description": "100-Pod burst, pool A, run 1",
+        "runtime": "runc",
+        "pod_count": 100,
+        "startup_relationship_denials": 0,
+        "creation_request_to_observed_ready": {
+          "count": 100,
+          "p50_ms": 17910.025999999998,
+          "p95_ms": 18765.253,
+          "maximum_ms": 18818.452,
+          "over_17000_ms": 66
+        },
+        "journal_sandbox_start_to_return": {
+          "count": 100,
+          "p50_ms": 4349.172119140625,
+          "p95_ms": 5303.1220703125,
+          "maximum_ms": 6240.188232421875,
+          "over_17000_ms": 0
+        },
+        "workload_deletion_during_observation": false,
+        "summary_sha256": "6402718706165aeba3387234a88c87d2aee57febe0fdc10a8417482da01ac731",
+        "observation_sha256": "fdf9782a6f55587b2ca6974a779d4cfe995543b17b55e31890825c32a79e5a40"
+      },
+      {
+        "id": "A2",
+        "description": "100-Pod burst, pool A, run 2",
+        "runtime": "runc",
+        "pod_count": 100,
+        "startup_relationship_denials": 0,
+        "creation_request_to_observed_ready": {
+          "count": 100,
+          "p50_ms": 17736.148,
+          "p95_ms": 18136.979,
+          "maximum_ms": 18162.966,
+          "over_17000_ms": 75
+        },
+        "journal_sandbox_start_to_return": {
+          "count": 100,
+          "p50_ms": 4140.04296875,
+          "p95_ms": 4888.18505859375,
+          "maximum_ms": 5118.51708984375,
+          "over_17000_ms": 0
+        },
+        "workload_deletion_during_observation": false,
+        "summary_sha256": "ed32ecee83e67fc9a38c30017577198ee8bee0ce6d5f60b81a4962b645ba3b4c",
+        "observation_sha256": "35e1f646cc2d720d2a18e2371e93fc1c57d6fa62aa338cf37d626bdea3707154"
+      },
+      {
+        "id": "A3",
+        "description": "100-Pod burst, pool A, run 3",
+        "runtime": "runc",
+        "pod_count": 100,
+        "startup_relationship_denials": 3,
+        "creation_request_to_observed_ready": {
+          "count": 100,
+          "p50_ms": 24143.937,
+          "p95_ms": 25430.235,
+          "maximum_ms": 25784.092,
+          "over_17000_ms": 96
+        },
+        "journal_sandbox_start_to_return": {
+          "count": 100,
+          "p50_ms": 11991.43603515625,
+          "p95_ms": 13218.052978515625,
+          "maximum_ms": 13919.829833984375,
+          "over_17000_ms": 0
+        },
+        "workload_deletion_during_observation": false,
+        "summary_sha256": "c7fd9ce7c40e909ce5a63231d3958b84dec59ea02844900d536254d805d63718",
+        "observation_sha256": "c0c2e48376c2f737c378ab8b79d67676c3cda0cd7d9028724491f61cccbe55c4"
+      },
+      {
+        "id": "B1",
+        "description": "100-Pod burst, pool B, run 1",
+        "runtime": "runc",
+        "pod_count": 100,
+        "startup_relationship_denials": 2,
+        "creation_request_to_observed_ready": {
+          "count": 100,
+          "p50_ms": 25024.484,
+          "p95_ms": 27500.069,
+          "maximum_ms": 28536.371,
+          "over_17000_ms": 98
+        },
+        "journal_sandbox_start_to_return": {
+          "count": 100,
+          "p50_ms": 6118.222900390625,
+          "p95_ms": 6980.18212890625,
+          "maximum_ms": 7188.7578125,
+          "over_17000_ms": 0
+        },
+        "workload_deletion_during_observation": false,
+        "summary_sha256": "294a01f6e77e72f44f13acc437ef5f259affcab228b1eb0cea70d90da8fb56d2",
+        "observation_sha256": "a8c389a63271d122aa0b338fb63391f5e1b2aac85f7372453bd31381eabf0f6f"
+      },
+      {
+        "id": "B2",
+        "description": "100-Pod burst, pool B, run 2",
+        "runtime": "runc",
+        "pod_count": 100,
+        "startup_relationship_denials": 0,
+        "creation_request_to_observed_ready": {
+          "count": 100,
+          "p50_ms": 20672.324,
+          "p95_ms": 21070.974,
+          "maximum_ms": 21176.282,
+          "over_17000_ms": 93
+        },
+        "journal_sandbox_start_to_return": {
+          "count": 100,
+          "p50_ms": 6116.68603515625,
+          "p95_ms": 6724.64501953125,
+          "maximum_ms": 7143.420166015625,
+          "over_17000_ms": 0
+        },
+        "workload_deletion_during_observation": false,
+        "summary_sha256": "cd190aba5eec3747e3262ed0b3c939357817bd6a323824b3117569423f7f536e",
+        "observation_sha256": "659b4b51d432541abc467c6f43e0b968333a4cbb9374703d7294365aede2add9"
+      }
+    ],
+    "hundred_pod_aggregate": {
+      "pods": 500,
+      "startup_relationship_denials": 5,
+      "observed_ready_over_17s": 428,
+      "journal_sandbox_interval_over_17s": 0,
+      "observed_ready_over_17s_in_zero_denial_cohorts": 234,
+      "maximum_journal_sandbox_interval_ms": 13919.829833984375
+    }
+  },
+  "bounded_retry_contract": {
+    "max_additional_initial_lookup_passes": 4,
+    "retry_window_seconds": 3,
+    "initial_retry_delay_ms": 100,
+    "backoff_factor": 2,
+    "jitter_factor": 0.1,
+    "normal_pod_worker_backoff_seconds": 10,
+    "scope": "Initial PVC/PV Forbidden lookup failures; budget is not renewed on ordinary resync; permissions unchanged"
+  },
+  "integration": {
+    "real_components": [
+      "Two loopback kube-apiserver instances with isolated shared etcd prefix",
+      "Production NodeAuthorizer and informer/graph event handlers",
+      "Real PV/PVC/Pod storage, Pod binding subresource, and node-authorized watch",
+      "Real node-identity PVC/PV HTTP requests",
+      "Real kubelet desired-state populator and error cache"
+    ],
+    "controlled_components": [
+      "Gate only the assigned-Pod graph notification",
+      "Explicit populator-pass barriers",
+      "Fake clock for retry time; fake volume plugin, no physical mount"
+    ],
+    "cases": [
+      "same-replica denial",
+      "cross-replica PVC 200 followed by PV 403",
+      "delayed convergence through multiple denied retry passes",
+      "time-budget exhaustion",
+      "attempt-budget exhaustion",
+      "no renewed fast budget on ordinary resync",
+      "recovery after fallback on explicit normal resync",
+      "unrelated-node access stays forbidden"
+    ],
+    "repetitions": 5,
+    "final_leaf_pass_records": 50,
+    "race_detector": true
+  },
+  "generic_backoff": {
+    "samples": 90,
+    "distinct_cases": 30,
+    "repetitions_per_case": 3,
+    "semantics": "First successful Pod sync with all expected volumes mounted; not container readiness",
+    "verdict": "Diagnostic NO-GO for indiscriminate faster retry: isolated recovery can improve while healthy late arrivals regress under shared pressure."
+  },
+  "corrected_bounded_retry": {
+    "source_id": "E04",
+    "samples": 36,
+    "verdict": "NO-GO unchanged after deadline-corrected remeasurement",
+    "summaries": [
+      {
+        "scenario": "healthy",
+        "baseline": {
+          "gets": {
+            "median": 300,
+            "min": 300,
+            "max": 300
+          },
+          "completed": {
+            "median": 100,
+            "min": 100,
+            "max": 100
+          },
+          "eligible": 100,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 4202.817875,
+            "min": 4201.191667,
+            "max": 4211.74425
+          },
+          "late_healthy_p95_ms": {
+            "status": "not_applicable"
+          },
+          "recovery_p95_ms": {
+            "status": "not_applicable"
+          }
+        },
+        "candidate": {
+          "gets": {
+            "median": 300,
+            "min": 300,
+            "max": 300
+          },
+          "completed": {
+            "median": 100,
+            "min": 100,
+            "max": 100
+          },
+          "eligible": 100,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 4205.8235,
+            "min": 3909.9602080000004,
+            "max": 4208.894708
+          },
+          "late_healthy_p95_ms": {
+            "status": "not_applicable"
+          },
+          "recovery_p95_ms": {
+            "status": "not_applicable"
+          }
+        }
+      },
+      {
+        "scenario": "brief_pvc",
+        "baseline": {
+          "gets": {
+            "median": 65,
+            "min": 65,
+            "max": 65
+          },
+          "completed": {
+            "median": 20,
+            "min": 20,
+            "max": 20
+          },
+          "eligible": 20,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 602.003667,
+            "min": 601.340541,
+            "max": 602.024375
+          },
+          "late_healthy_p95_ms": {
+            "status": "not_applicable"
+          },
+          "recovery_p95_ms": {
+            "status": "complete",
+            "median": 14525.648042,
+            "min": 13860.960209,
+            "max": 15274.609459000001
+          }
+        },
+        "candidate": {
+          "gets": {
+            "median": 65,
+            "min": 65,
+            "max": 65
+          },
+          "completed": {
+            "median": 20,
+            "min": 20,
+            "max": 20
+          },
+          "eligible": 20,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 602.035875,
+            "min": 601.8407500000001,
+            "max": 602.1854169999999
+          },
+          "late_healthy_p95_ms": {
+            "status": "not_applicable"
+          },
+          "recovery_p95_ms": {
+            "status": "complete",
+            "median": 404.913584,
+            "min": 402.658458,
+            "max": 405.182291
+          }
+        }
+      },
+      {
+        "scenario": "lagged_pv",
+        "baseline": {
+          "gets": {
+            "median": 70,
+            "min": 70,
+            "max": 70
+          },
+          "completed": {
+            "median": 20,
+            "min": 20,
+            "max": 20
+          },
+          "eligible": 20,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 602.665,
+            "min": 602.412084,
+            "max": 602.881041
+          },
+          "late_healthy_p95_ms": {
+            "status": "not_applicable"
+          },
+          "recovery_p95_ms": {
+            "status": "complete",
+            "median": 12839.654875,
+            "min": 12666.5835,
+            "max": 13360.005291
+          }
+        },
+        "candidate": {
+          "gets": {
+            "median": 100,
+            "min": 100,
+            "max": 100
+          },
+          "completed": {
+            "median": 20,
+            "min": 20,
+            "max": 20
+          },
+          "eligible": 20,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 602.374541,
+            "min": 602.3005420000001,
+            "max": 602.4546250000001
+          },
+          "late_healthy_p95_ms": {
+            "status": "not_applicable"
+          },
+          "recovery_p95_ms": {
+            "status": "complete",
+            "median": 799.414459,
+            "min": 796.866834,
+            "max": 800.541125
+          }
+        }
+      },
+      {
+        "scenario": "burst",
+        "baseline": {
+          "gets": {
+            "median": 320,
+            "min": 320,
+            "max": 320
+          },
+          "completed": {
+            "median": 100,
+            "min": 100,
+            "max": 100
+          },
+          "eligible": 100,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 3911.2735000000002,
+            "min": 3908.8826249999997,
+            "max": 3911.3025829999997
+          },
+          "late_healthy_p95_ms": {
+            "status": "not_applicable"
+          },
+          "recovery_p95_ms": {
+            "status": "complete",
+            "median": 13031.594541,
+            "min": 12722.318,
+            "max": 13769.931458000001
+          }
+        },
+        "candidate": {
+          "gets": {
+            "median": 320,
+            "min": 320,
+            "max": 320
+          },
+          "completed": {
+            "median": 100,
+            "min": 100,
+            "max": 100
+          },
+          "eligible": 100,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 3906.148166,
+            "min": 3904.346292,
+            "max": 3907.6616670000003
+          },
+          "late_healthy_p95_ms": {
+            "status": "not_applicable"
+          },
+          "recovery_p95_ms": {
+            "status": "complete",
+            "median": 17270.794124999997,
+            "min": 16924.536334,
+            "max": 17535.646542
+          }
+        }
+      },
+      {
+        "scenario": "persistent_qps20",
+        "baseline": {
+          "gets": {
+            "median": 288,
+            "min": 288,
+            "max": 288
+          },
+          "completed": {
+            "median": 29,
+            "min": 29,
+            "max": 29
+          },
+          "eligible": 32,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 2700.6495,
+            "min": 2700.511708,
+            "max": 2701.8987079999997
+          },
+          "late_healthy_p95_ms": {
+            "status": "complete",
+            "median": 7501.567208,
+            "min": 7501.155417,
+            "max": 7501.713333
+          },
+          "recovery_p95_ms": {
+            "status": "censored",
+            "complete_runs": 0
+          }
+        },
+        "candidate": {
+          "gets": {
+            "median": 308,
+            "min": 308,
+            "max": 308
+          },
+          "completed": {
+            "median": 32,
+            "min": 32,
+            "max": 32
+          },
+          "eligible": 32,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 2700.75225,
+            "min": 2700.483917,
+            "max": 2702.024833
+          },
+          "late_healthy_p95_ms": {
+            "status": "complete",
+            "median": 9300.949708999999,
+            "min": 9300.9165,
+            "max": 9302.016625
+          },
+          "recovery_p95_ms": {
+            "status": "complete",
+            "median": 16905.150416,
+            "min": 16594.204041,
+            "max": 17094.678083000003
+          }
+        }
+      },
+      {
+        "scenario": "slow_api",
+        "baseline": {
+          "gets": {
+            "median": 288,
+            "min": 288,
+            "max": 288
+          },
+          "completed": {
+            "median": 29,
+            "min": 29,
+            "max": 29
+          },
+          "eligible": 32,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 4501.825791,
+            "min": 4501.819958,
+            "max": 4502.125209
+          },
+          "late_healthy_p95_ms": {
+            "status": "complete",
+            "median": 7500.851167000001,
+            "min": 7500.724749999999,
+            "max": 7501.173208
+          },
+          "recovery_p95_ms": {
+            "status": "censored",
+            "complete_runs": 0
+          }
+        },
+        "candidate": {
+          "gets": {
+            "median": 315,
+            "min": 307,
+            "max": 317
+          },
+          "completed": {
+            "median": 29,
+            "min": 28,
+            "max": 32
+          },
+          "eligible": 32,
+          "healthy_p95_ms": {
+            "status": "complete",
+            "median": 4502.035041,
+            "min": 4502.0349160000005,
+            "max": 4502.052457999999
+          },
+          "late_healthy_p95_ms": {
+            "status": "complete",
+            "median": 9600.768542000002,
+            "min": 9600.725209,
+            "max": 9601.025333000001
+          },
+          "recovery_p95_ms": {
+            "status": "censored",
+            "complete_runs": 1
+          }
+        }
+      }
+    ]
+  },
+  "headroom": {
+    "source_id": "E09",
+    "three_second_result": {
+      "pilot": "Both 25% and 50% reserves restored late-healthy latency and GET count to baseline in the tested phase. Neither refused light-workload retries.",
+      "confirmation_policy": "reserve25",
+      "selection_reason": "The smaller successful pilot reserve was selected before broader confirmation; it is not a proposed default.",
+      "baseline_late_healthy_p95_ms_median": 5402.032875,
+      "no_reserve_late_healthy_p95_ms_median": 6003.640042,
+      "reserve25_late_healthy_p95_ms_median": 5403.211125000001,
+      "baseline_gets_median": 288,
+      "no_reserve_gets_median": 297,
+      "reserve25_gets_median": 288
+    },
+    "four_second_counterexample": {
+      "scenario": "persistent_qps20",
+      "repetitions_per_mode": 3,
+      "metric": "Median of per-run late-healthy startup p95, measured from each Pod's submission",
+      "baseline": {
+        "late_healthy_p95_ms_median": 4502.6832079999995,
+        "gets_median": 288,
+        "completed_recoverable_pods": [
+          29,
+          30,
+          30
+        ]
+      },
+      "reserve25": {
+        "late_healthy_p95_ms_median": 5403.735625,
+        "regression_ms": 901.0524170000008,
+        "regression_percent": 20.011454845392727,
+        "gets_median": 302,
+        "admitted_retry_gets": [
+          14,
+          15,
+          14
+        ],
+        "completed_recoverable_pods": [
+          32,
+          32,
+          32
+        ]
+      },
+      "reserve50": {
+        "late_healthy_p95_ms_median": 4816.1474579999995,
+        "regression_ms": 313.46425,
+        "regression_percent": 6.961721167570989,
+        "gets_median": 295,
+        "admitted_retry_gets": [
+          5,
+          7,
+          7
+        ],
+        "completed_recoverable_pods": [
+          32,
+          32,
+          32
+        ]
+      },
+      "interpretation": "Both candidate p95 ranges are entirely above the baseline range. Candidates complete all 32 recoverable Pods within the fixed 20-second observation window, while baseline completes 29-30; that recovery benefit does not erase the healthy-Pod latency cost."
+    }
+  },
+  "whole_pod_preflight": {
+    "source_id": "E11",
+    "four_second_primary_results": {
+      "metric": "Median of per-run untraced late-healthy startup p95; three repetitions per cell",
+      "baseline": {
+        "healthy_p95_ms": 4502.444167000001,
+        "gets_per_run": 288,
+        "transient_first_sync_completions_per_run": 0
+      },
+      "existing_reserve25": {
+        "healthy_p95_ms": 5402.005875000001,
+        "gets": [
+          302,
+          302,
+          301
+        ],
+        "transient_first_sync_completions_per_run": 0
+      },
+      "wholepod25": {
+        "healthy_p95_ms": 5102.782834000001,
+        "regression_from_baseline_percent": 13.333617136223333,
+        "gets_per_run": 288,
+        "transient_first_sync_completions_per_run": 2,
+        "transient_completions_before_arrival_per_run": 2,
+        "interpretation": "About 300 ms faster than the existing 25% reserve, and two Pods recover without a later Pod sync. Healthy latency is still about 600 ms slower than baseline."
+      },
+      "wholepod50": {
+        "healthy_p95_ms": 4801.934375,
+        "regression_from_baseline_percent": 6.651725082902049,
+        "gets_per_run": 288,
+        "transient_first_sync_completions_per_run": 1,
+        "transient_completions_before_arrival_per_run": 0,
+        "interpretation": "One Pod recovers on its original sync, but around 4.2 seconds, just after the late-arrival boundary. Healthy latency remains approximately 300 ms slower than baseline, essentially unchanged from the existing 50% reserve."
+      },
+      "wholepod_without_fixed_reserve": {
+        "healthy_p95_ms": 5702.879583,
+        "regression_from_baseline_percent": 26.6618612352467,
+        "gets_per_run": 296,
+        "transient_first_sync_completions_per_run": 3,
+        "transient_completions_before_arrival_per_run": 2,
+        "interpretation": "Completion budgeting alone still admits unsuccessful retries of permanently denied Pods and does not protect later healthy traffic."
+      }
+    }
+  },
+  "contention_veto": {
+    "source_id": "E12",
+    "busy_cohort": {
+      "arrival_3s": {
+        "baseline_healthy_p95_ms": 5401.95375,
+        "veto_healthy_p95_ms": 5402.773,
+        "gets_every_run": 288,
+        "vetoed_checks_per_run": 6
+      },
+      "arrival_4s": {
+        "baseline_healthy_p95_ms": 4501.687666999999,
+        "observer_only_healthy_p95_ms": 5101.3038750000005,
+        "veto_healthy_p95_ms": 4501.119874999999,
+        "gets_every_veto_run": 288,
+        "vetoed_checks_per_run": 15,
+        "first_sync_transient_completions_per_veto_run": 0,
+        "interpretation": "The veto reaches near-baseline healthy latency by suppressing accelerated work for the already-contended episodes. The observer-only preflight still completes two transient Pods on their first sync; the veto completes none that way."
+      },
+      "timing_basis": "Medians of three untraced runs per cell. Tiny differences around baseline are not claimed as improvements."
+    },
+    "transition_counterexample": {
+      "workload": "Two initial healthy Pods, four transiently denied Pods, then 20 healthy Pods at one second; two volumes each, QPS/burst 20/40, 5 ms API latency, and 1.5 s PV authorization lag.",
+      "baseline_healthy_p95_ms": 4502.848249999999,
+      "native_preflight_healthy_p95_ms": 5102.698125,
+      "observer_only_healthy_p95_ms": 5103.8625839999995,
+      "veto_healthy_p95_ms": 5103.622959,
+      "veto_regression_percent": 13.34210427810889,
+      "baseline_gets_per_run": 172,
+      "veto_gets_per_run": 184,
+      "vetoed_checks_per_run": 0,
+      "first_sync_transient_completions_per_run": 0,
+      "trace": {
+        "ordinary_arrival_ms": 1001.07075,
+        "first_queued_wait_at_ms": 1092.322167,
+        "retry_gets_before_arrival": 12,
+        "retry_gets_before_first_queue": 12,
+        "retry_gets_after_first_queue": 0,
+        "first_queued_request_group": "late",
+        "baseline_tokens_at_arrival": 30.210845000000013,
+        "veto_tokens_at_arrival": 18.216053319999993
+      },
+      "interpretation": "All 12 extra retry GETs have already happened before the late Pods arrive, and before the first ordinary wait queues. The veto therefore has nothing left to prevent when contention becomes observable. Native and observer-only controls reproduce the same request totals and roughly the same 600 ms healthy-latency penalty."
+    },
+    "observer_timing_neutrality": "Not established"
+  },
+  "deferred_read": {
+    "source_id": "E15",
+    "verdict": "NO-GO for combining bounded retry with read reuse under the unchanged no-healthy-regression criterion. The narrowed RWO/RWOP read-reuse candidate passes the tested safety contract and is worth separate CSI-backed evaluation.",
+    "eligibility": "New, unknown-size, writable, expandable filesystem; exactly one PV access mode: ReadWriteOnce or ReadWriteOncePod. Reconstruction, mounted-elsewhere, identity, and existing-size guards retained.",
+    "safety": {
+      "accepted_change": "New eligible volumes may execute SetUp before a PVC Forbidden/NotFound response. Runtime startup remains blocked and uncertain-state teardown/device cleanup is exercised.",
+      "discovered_regression": "A RWX PVC can advance from 1Gi to 2Gi on another node after verification but before the mount-time read. Broad deferral records 2Gi locally and suppresses a required local expansion when the PV update arrives.",
+      "rw_x_comparison": "In both modern and legacy resize paths, native behavior calls local NodeExpand once; broad deferral calls it zero times. Both failures repeat 5/5 with the corrected fixture.",
+      "correction": "Only PVs with exactly one access mode, ReadWriteOnce or ReadWriteOncePod, are eligible. RWX, missing or ambiguous access modes retain the earlier verification behavior. The revised guard set passes five race-enabled repetitions.",
+      "candidate_pass_records": 385,
+      "native_control_pass_records": 270,
+      "qualification": "These are repeated PASS records including parent tests, not 655 distinct tests. Real cache/operation/reconciler/SyncPod logic is tested with fake API clients, plugins and runtime; actual CSI filesystem/device safety is not certified."
+    },
+    "standalone_read_reduction": {
+      "eligible_happy_path_gets": {
+        "native": 4,
+        "deferred": 3
+      },
+      "healthy_100_pods": {
+        "native_gets": 400,
+        "deferred_gets": 300,
+        "get_reduction_percent": 25,
+        "native_startup_p95_median_ms": 6003.158583,
+        "deferred_startup_p95_median_ms": 4202.741833,
+        "latency_reduction_percent": 29.991157573256466
+      },
+      "qualification": "This gain belongs to eliminating the early capacity-only read, not to bounded retry. Non-expandable volumes retain three GETs; read-only expandable volumes retain four."
+    },
+    "mixed_healthy_regressions": [
+      {
+        "scenario": "mixed_readonly_late_pressure",
+        "native_late_p95_median_ms": 6603.421292,
+        "deferred_late_p95_median_ms": 6302.68175,
+        "combined_late_p95_median_ms": 7802.296083,
+        "combined_vs_native_percent": 18.15535823001977,
+        "combined_vs_deferred_percent": 23.79327391867756,
+        "native_gets": 224,
+        "deferred_gets": 212,
+        "combined_gets": 240,
+        "combined_first_sync_transient_completions": [
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "scenario": "mixed_readonly_arrival4",
+        "native_late_p95_median_ms": 6902.467458,
+        "deferred_late_p95_median_ms": 6302.126459,
+        "combined_late_p95_median_ms": 7802.100917,
+        "combined_vs_native_percent": 13.033505256983414,
+        "combined_vs_deferred_percent": 23.80108472526605,
+        "native_gets": [
+          352,
+          352,
+          352
+        ],
+        "deferred_gets": [
+          328,
+          328,
+          328
+        ],
+        "combined_gets": [
+          352,
+          353,
+          353
+        ],
+        "native_recoverable_completions": [
+          29,
+          29,
+          29
+        ],
+        "deferred_recoverable_completions": [
+          29,
+          29,
+          29
+        ],
+        "combined_recoverable_completions": [
+          32,
+          32,
+          32
+        ],
+        "combined_first_sync_transient_completions": [
+          0,
+          0,
+          0
+        ],
+        "interpretation": "Nearly equal total GET counts still do not imply equal healthy latency. The combined policy completes more recoverable Pods within the fixed 20-second observation window, but does not pass the healthy-latency gate."
+      }
+    ],
+    "light_recovery": {
+      "scenario": "lagged_pv",
+      "native_recovery_p95_median_ms": 12911.152959000001,
+      "combined_recovery_p95_median_ms": 1384.3868750000001,
+      "native_gets": 90,
+      "deferred_gets": 70,
+      "retry_only_gets": 114,
+      "combined_gets": 94,
+      "combined_first_sync_transient_completions": [
+        5,
+        5,
+        5
+      ],
+      "qualification": "Recovery is measured from the harness authorization-window expiry, not the first denial or Pod readiness. Millisecond differences and the approximately 300 ms polling-phase variation are not claimed as policy improvements."
+    },
+    "evidence": {
+      "corrected_candidate_untraced_samples": 48,
+      "broad_candidate_untraced_samples_retained_separately": 73,
+      "interrupted_samples_not_counted": 1,
+      "independently_recomputed_group_percentiles": 363,
+      "corrected_candidate_race_fixture_samples": 12,
+      "repetitions_per_corrected_cell": 3
+    },
+    "exact_reported_workload_coverage": "The candidate does not apply to the reported original raw-block path or the read-only, non-expandable hostPath minimal repro."
+  },
+  "csi_qualification": {
+    "source_id": "E16",
+    "verdict": "PASS for the approved local hostpath CSI qualification scope; not physical filesystem-growth certification or a production-merge recommendation.",
+    "cases": 42,
+    "comparisons": [
+      {
+        "case": "steady-rwo",
+        "controls": [
+          {
+            "variant": "native",
+            "initial_reads_through_mount": [
+              {
+                "phase": "populator_pvc",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "populator_pv",
+                "resource": "persistentvolumes",
+                "status": 200
+              },
+              {
+                "phase": "verification",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "mount_expansion",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              }
+            ],
+            "verification_reads": 1,
+            "csi": {
+              "NodeStageVolume": 1,
+              "NodePublishVolume": 1,
+              "NodeUnpublishVolume": 1,
+              "NodeUnstageVolume": 1,
+              "NodeExpandVolume": 0
+            }
+          },
+          {
+            "variant": "deferred",
+            "initial_reads_through_mount": [
+              {
+                "phase": "populator_pvc",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "populator_pv",
+                "resource": "persistentvolumes",
+                "status": 200
+              },
+              {
+                "phase": "mount_expansion",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              }
+            ],
+            "verification_reads": 0,
+            "csi": {
+              "NodeStageVolume": 1,
+              "NodePublishVolume": 1,
+              "NodeUnpublishVolume": 1,
+              "NodeUnstageVolume": 1,
+              "NodeExpandVolume": 0
+            }
+          }
+        ]
+      },
+      {
+        "case": "steady-rwop",
+        "controls": [
+          {
+            "variant": "native",
+            "initial_reads_through_mount": [
+              {
+                "phase": "populator_pvc",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "populator_pv",
+                "resource": "persistentvolumes",
+                "status": 200
+              },
+              {
+                "phase": "verification",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "mount_expansion",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              }
+            ],
+            "verification_reads": 1,
+            "csi": {
+              "NodeStageVolume": 1,
+              "NodePublishVolume": 1,
+              "NodeUnpublishVolume": 1,
+              "NodeUnstageVolume": 1,
+              "NodeExpandVolume": 0
+            }
+          },
+          {
+            "variant": "deferred",
+            "initial_reads_through_mount": [
+              {
+                "phase": "populator_pvc",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "populator_pv",
+                "resource": "persistentvolumes",
+                "status": 200
+              },
+              {
+                "phase": "mount_expansion",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              }
+            ],
+            "verification_reads": 0,
+            "csi": {
+              "NodeStageVolume": 1,
+              "NodePublishVolume": 1,
+              "NodeUnpublishVolume": 1,
+              "NodeUnstageVolume": 1,
+              "NodeExpandVolume": 0
+            }
+          }
+        ]
+      },
+      {
+        "case": "read-only",
+        "controls": [
+          {
+            "variant": "native",
+            "initial_reads_through_mount": [
+              {
+                "phase": "populator_pvc",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "populator_pv",
+                "resource": "persistentvolumes",
+                "status": 200
+              },
+              {
+                "phase": "verification",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "mount_expansion",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              }
+            ],
+            "verification_reads": 1,
+            "csi": {
+              "NodeStageVolume": 1,
+              "NodePublishVolume": 1,
+              "NodeUnpublishVolume": 1,
+              "NodeUnstageVolume": 1,
+              "NodeExpandVolume": 0
+            }
+          },
+          {
+            "variant": "deferred",
+            "initial_reads_through_mount": [
+              {
+                "phase": "populator_pvc",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "populator_pv",
+                "resource": "persistentvolumes",
+                "status": 200
+              },
+              {
+                "phase": "verification",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              },
+              {
+                "phase": "mount_expansion",
+                "resource": "persistentvolumeclaims",
+                "status": 200
+              }
+            ],
+            "verification_reads": 1,
+            "csi": {
+              "NodeStageVolume": 1,
+              "NodePublishVolume": 1,
+              "NodeUnpublishVolume": 1,
+              "NodeUnstageVolume": 1,
+              "NodeExpandVolume": 0
+            }
+          }
+        ]
+      }
+    ],
+    "fixture_correction": "The first raw-manifest fixture omitted --check-volume-lifecycle=true, which the repository adds in hostpathCSIDriver.PrepareTest. Native cleanup then lost driver state before NodeUnpublish and left a real mount. Those 16 passing/1 failing cases are retained separately; the owned cluster was recreated and both controls rerun with the standard guard.",
+    "limits": "Hostpath uses real bind mounts but NodeExpand only validates paths/capacity. No physical block-device or filesystem expansion is demonstrated. API failures are injected, not real NodeAuthorizer graph lag. Instrumented timings are not performance evidence."
+  },
+  "physical_qualification": {
+    "source_id": "E17",
+    "verdict": "PASS for the tested TopoLVM/ext4 physical-growth gate with bounded retry disabled. This is evidence for standalone read reuse, not a universal driver certification or approval of bounded retry.",
+    "cases": 36,
+    "per_variant": [
+      {
+        "variant": "native",
+        "cases": 18,
+        "growth_cases": 12,
+        "filesystem_before_bytes": [
+          1020702720
+        ],
+        "filesystem_after_bytes": [
+          2077073408
+        ],
+        "successful_node_expansion_counts": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "variant": "deferred",
+        "cases": 18,
+        "growth_cases": 12,
+        "filesystem_before_bytes": [
+          1020702720
+        ],
+        "filesystem_after_bytes": [
+          2077073408
+        ],
+        "successful_node_expansion_counts": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    ],
+    "initial_device_bytes": 1073741824,
+    "expanded_device_bytes": 2147483648,
+    "large_file_total_bytes": 1207959552,
+    "limits": [
+      "One maintained CSI driver and ext4 were tested; this does not certify XFS, all CSI drivers, cloud disks, or multi-node/RWX behavior.",
+      "The backing device is a real Linux block/filesystem stack over an owned file, not a production storage appliance.",
+      "API failures are scoped transport injections, not real NodeAuthorizer graph lag.",
+      "The prototype intentionally allows eligible setup work before a later failed PVC read; maintainer review of that behavior remains required.",
+      "These instrumented functional tests provide no new latency or throughput evidence. The earlier bounded-retry NO-GO verdict is unchanged."
+    ],
+    "cleanup": {
+      "storage_clean": true,
+      "temporary_vm_removed": true,
+      "original_vm_restored": true
+    }
+  },
+  "evidence_index": [
+    {
+      "id": "E02",
+      "title": "Generic backoff sweep",
+      "artifact_filename": "volume-retry-results.json",
+      "sha256": "19bfbe5d481d98a8851994d82bfb19091c5087483607fd760a482dd7f6d4c5bd"
+    },
+    {
+      "id": "E03",
+      "title": "Initial bounded retry and real-authorizer integration",
+      "artifact_filename": "bounded-volume-retry-evaluation.json",
+      "sha256": "77fd8ff5d217fef8e83ae4b20bc8f2eebcbcabe02ce061840050713ba3813304"
+    },
+    {
+      "id": "E04",
+      "title": "Deadline-corrected bounded retry",
+      "artifact_filename": "bounded-volume-retry-corrected-evaluation.json",
+      "sha256": "d60703a95fb5a36aa1e2a44d579f1072778172c4fe0364eedcc0669849225bf8"
+    },
+    {
+      "id": "E05",
+      "title": "Anchored fallback",
+      "artifact_filename": "bounded-volume-retry-anchored-evaluation.json",
+      "sha256": "d7da30aff8a8fe134673b6e25f44afb8b756b8880add0d17b50a372b772d0fd0"
+    },
+    {
+      "id": "E06",
+      "title": "Ordinary-work priority",
+      "artifact_filename": "bounded-volume-retry-priority-evaluation.json",
+      "sha256": "f777f17abccda156a08dd7a54492b22a48b2a50e9f5357848c18d0f20225583f"
+    },
+    {
+      "id": "E07",
+      "title": "One-Pod retry quantum",
+      "artifact_filename": "bounded-volume-retry-quantum-evaluation.json",
+      "sha256": "0315c37a93b23a103e3a714f752343f862393411cd1bc9cce0fd5df625ecb92d"
+    },
+    {
+      "id": "E08",
+      "title": "Non-blocking per-GET admission",
+      "artifact_filename": "bounded-volume-retry-capacity-evaluation.json",
+      "sha256": "c3e23f6b87905c0fb44f8f4ba5c44e0efed7366448c50fa9b10109cd1f2030eb"
+    },
+    {
+      "id": "E09",
+      "title": "Reserved headroom",
+      "artifact_filename": "bounded-volume-retry-headroom-evaluation.json",
+      "sha256": "776113d9746147ae7eacbc779e7eae700b8d9f6b15bd6ec3d190e9a40092f31a"
+    },
+    {
+      "id": "E10",
+      "title": "Request/token tracing",
+      "artifact_filename": "bounded-volume-retry-token-trace-evaluation.json",
+      "sha256": "42d221f6906f52308f84a2abd7e706c9a1dec8b78a8b0743ffa5c9c8a43a9d13"
+    },
+    {
+      "id": "E11",
+      "title": "Whole-Pod preflight",
+      "artifact_filename": "bounded-volume-retry-pod-preflight-evaluation.json",
+      "sha256": "29ed9824413e6e6b3ba21dfccd7902e2ecf072255a902b02872f94b91b738146"
+    },
+    {
+      "id": "E12",
+      "title": "Sticky contention veto",
+      "artifact_filename": "bounded-volume-retry-contention-evaluation.json",
+      "sha256": "d868eaad00194d44c95d0e01c37e14f437a8d1396c1b7ee547827c6893d000d6"
+    },
+    {
+      "id": "E13",
+      "title": "Claim-size snapshot handoff",
+      "artifact_filename": "bounded-volume-retry-claim-size-evaluation.json",
+      "sha256": "d7a1b3268a1469d7d472bc1fbee630e510af48be41895a2c5fa50f0fd9add1d5"
+    },
+    {
+      "id": "E14",
+      "title": "Fresh-read phase-ordering probe",
+      "artifact_filename": "bounded-volume-retry-fresh-size-phase-evaluation.json",
+      "sha256": "1187e9c6fa15373f96625ebdd95b887272c77d15f0e4d5301da60c7f0983ebd1"
+    },
+    {
+      "id": "E15",
+      "title": "Deferred initialization and factorial measurements",
+      "artifact_filename": "bounded-volume-retry-deferred-size-evaluation.json",
+      "sha256": "3685417410d65a87aba07cf5afbe81c940f651dc5e4afc6356a403cabc98a035"
+    },
+    {
+      "id": "E16",
+      "title": "CSI hostpath qualification",
+      "artifact_filename": "csi-volume-read-reuse-evaluation.json",
+      "sha256": "856b7ccdbff6d790ab671b8835cd41796c5e923f7bd3075b0981f9f284af04ea"
+    },
+    {
+      "id": "E17",
+      "title": "Physical ext4 growth qualification",
+      "artifact_filename": "physical-csi-read-reuse-evaluation.json",
+      "sha256": "7b18ca02fcdef7456889af0e0a786800b90533cb299973219ff9bac6e8b3ea6c"
+    }
+  ],
+  "privacy": {
+    "omitted": [
+      "Private chat text and links",
+      "Tenant/subscription/resource-group/cluster/node names",
+      "Pod/PVC/PV/audit/sandbox identifiers",
+      "Credentials and kubeconfigs",
+      "Absolute local filesystem paths",
+      "Raw incident logs and raw per-Pod records"
+    ],
+    "source_artifacts_available_to_the_owner": true,
+    "public_source_commit_only": true
+  }
+}

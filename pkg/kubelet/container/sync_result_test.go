@@ -139,6 +139,42 @@ func TestPodSyncResultPreservesOriginalErrorType(t *testing.T) {
 	})
 }
 
+func TestLatestBackoffStart(t *testing.T) {
+	now := time.Unix(100, 0)
+	failure := errors.New("volume lookup failed")
+	deferred := NewBackoffStartError(failure, now.Add(-4*time.Second))
+	if !errors.Is(deferred, failure) {
+		t.Fatal("deferred error must preserve its cause")
+	}
+	if IsBackoffError(deferred) {
+		t.Fatal("a deferred failure must still count as an ordinary sync error")
+	}
+	for _, tc := range []struct {
+		name  string
+		err   error
+		start time.Time
+		found bool
+	}{
+		{name: "wrapped", err: fmt.Errorf("volume wait: %w", deferred), start: now.Add(-4 * time.Second), found: true},
+		{name: "latest aggregate origin", err: utilerrors.NewAggregate([]error{
+			deferred, NewBackoffStartError(errors.New("second volume"), now.Add(-2*time.Second)),
+		}), start: now.Add(-2 * time.Second), found: true},
+		{name: "joined deferred errors", err: errors.Join(deferred, NewBackoffStartError(errors.New("second volume"), now.Add(-time.Second))),
+			start: now.Add(-time.Second), found: true},
+		{name: "fresh aggregate error", err: utilerrors.NewAggregate([]error{deferred, errors.New("fresh failure")})},
+		{name: "fresh joined error", err: errors.Join(deferred, errors.New("fresh failure"))},
+		{name: "missing origin", err: NewBackoffStartError(failure, time.Time{})},
+		{name: "ordinary error", err: failure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started, found := LatestBackoffStart(tc.err)
+			if found != tc.found || !started.Equal(tc.start) {
+				t.Fatalf("expected origin %v, found=%t; got %v, found=%t", tc.start, tc.found, started, found)
+			}
+		})
+	}
+}
+
 func TestMinBackoffExpiration(t *testing.T) {
 	now := time.Now()
 	testCases := []struct {

@@ -213,7 +213,7 @@ func newTestKubeletExcludeAdmitHandlers(t *testing.T, controllerAttachDetachEnab
 }
 
 func newTestKubeletWithImageList(
-	t *testing.T,
+	t testing.TB,
 	imageList []kubecontainer.Image,
 	controllerAttachDetachEnabled bool,
 	initFakeVolumePlugin bool,

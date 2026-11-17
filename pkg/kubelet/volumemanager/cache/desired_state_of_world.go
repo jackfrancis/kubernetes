@@ -121,13 +121,17 @@ type DesiredStateOfWorld interface {
 	VolumeExistsWithSpecName(podName types.UniquePodName, volumeSpecName string) bool
 
 	// AddErrorToPod adds the given error to the given pod in the cache.
-	// It will be returned by subsequent GetPodErrors().
-	// Each error string is stored only once.
+	// It will be returned by subsequent PopPodErrors().
+	// Each error message is stored only once, using its most recent metadata.
 	AddErrorToPod(podName types.UniquePodName, err string)
+
+	// AddErrorToPodWithBackoffStart retains the observation time of a deferred
+	// failure without exposing its original error type as a control signal.
+	AddErrorToPodWithBackoffStart(podName types.UniquePodName, err string, started time.Time)
 
 	// PopPodErrors returns accumulated errors on a given pod and clears
 	// them.
-	PopPodErrors(podName types.UniquePodName) []string
+	PopPodErrors(podName types.UniquePodName) []error
 
 	// GetPodsWithErrors returns names of pods that have stored errors.
 	GetPodsWithErrors() []types.UniquePodName
@@ -155,7 +159,7 @@ func NewDesiredStateOfWorld(volumePluginMgr *volume.VolumePluginMgr, seLinuxTran
 	return &desiredStateOfWorld{
 		volumesToMount:    make(map[v1.UniqueVolumeName]volumeToMount),
 		volumePluginMgr:   volumePluginMgr,
-		podErrors:         make(map[types.UniquePodName]sets.Set[string]),
+		podErrors:         make(map[types.UniquePodName]map[string]podError),
 		seLinuxTranslator: seLinuxTranslator,
 	}
 }
@@ -170,7 +174,7 @@ type desiredStateOfWorld struct {
 	// plugin objects.
 	volumePluginMgr *volume.VolumePluginMgr
 	// podErrors are errors caught by desiredStateOfWorldPopulator about volumes for a given pod.
-	podErrors map[types.UniquePodName]sets.Set[string]
+	podErrors map[types.UniquePodName]map[string]podError
 	// seLinuxTranslator translates v1.SELinuxOptions to a file SELinux label.
 	seLinuxTranslator util.SELinuxLabelTranslator
 
@@ -615,28 +619,49 @@ func (dsw *desiredStateOfWorld) GetVolumesToMount() []VolumeToMount {
 	return volumesToMount
 }
 
+type podError struct {
+	message      string
+	backoffStart time.Time
+}
+
+func (e podError) Error() string               { return e.message }
+func (e podError) BackoffStartTime() time.Time { return e.backoffStart }
+
 func (dsw *desiredStateOfWorld) AddErrorToPod(podName types.UniquePodName, err string) {
+	dsw.addErrorToPod(podName, podError{message: err})
+}
+
+func (dsw *desiredStateOfWorld) AddErrorToPodWithBackoffStart(podName types.UniquePodName, err string, started time.Time) {
+	dsw.addErrorToPod(podName, podError{message: err, backoffStart: started})
+}
+
+func (dsw *desiredStateOfWorld) addErrorToPod(podName types.UniquePodName, err podError) {
 	dsw.Lock()
 	defer dsw.Unlock()
 
 	if errs, found := dsw.podErrors[podName]; found {
-		if errs.Len() <= maxPodErrors {
-			errs.Insert(err)
+		_, exists := errs[err.message]
+		if exists || len(errs) <= maxPodErrors {
+			errs[err.message] = err
 		}
 		return
 	}
-	dsw.podErrors[podName] = sets.New[string](err)
+	dsw.podErrors[podName] = map[string]podError{err.message: err}
 }
 
-func (dsw *desiredStateOfWorld) PopPodErrors(podName types.UniquePodName) []string {
+func (dsw *desiredStateOfWorld) PopPodErrors(podName types.UniquePodName) []error {
 	dsw.Lock()
 	defer dsw.Unlock()
 
 	if errs, found := dsw.podErrors[podName]; found {
 		delete(dsw.podErrors, podName)
-		return sets.List(errs)
+		result := make([]error, 0, len(errs))
+		for _, message := range sets.List(sets.KeySet(errs)) {
+			result = append(result, errs[message])
+		}
+		return result
 	}
-	return []string{}
+	return []error{}
 }
 
 func (dsw *desiredStateOfWorld) GetPodsWithErrors() []types.UniquePodName {

@@ -50,6 +50,56 @@ func (e *BackoffError) BackoffTime() time.Time {
 	return e.backoffTime
 }
 
+// BackoffStartError retains the observation time of an error whose publication
+// was deferred. It remains an ordinary failure, not an expected backoff error.
+type BackoffStartError struct {
+	err     error
+	started time.Time
+}
+
+func NewBackoffStartError(err error, started time.Time) *BackoffStartError {
+	return &BackoffStartError{err: err, started: started}
+}
+
+func (e *BackoffStartError) Error() string               { return e.err.Error() }
+func (e *BackoffStartError) Unwrap() error               { return e.err }
+func (e *BackoffStartError) BackoffStartTime() time.Time { return e.started }
+
+// LatestBackoffStart returns an origin only when every error has one. A fresh
+// failure in an aggregate must not inherit an older failure's shortened delay.
+func LatestBackoffStart(err error) (time.Time, bool) {
+	switch e := err.(type) {
+	case interface{ BackoffStartTime() time.Time }:
+		started := e.BackoffStartTime()
+		return started, !started.IsZero()
+	case utilerrors.Aggregate:
+		return latestBackoffStart(e.Errors())
+	case interface{ Unwrap() []error }:
+		return latestBackoffStart(e.Unwrap())
+	case interface{ Unwrap() error }:
+		return LatestBackoffStart(e.Unwrap())
+	default:
+		return time.Time{}, false
+	}
+}
+
+func latestBackoffStart(errs []error) (time.Time, bool) {
+	if len(errs) == 0 {
+		return time.Time{}, false
+	}
+	var latest time.Time
+	for _, err := range errs {
+		started, ok := LatestBackoffStart(err)
+		if !ok {
+			return time.Time{}, false
+		}
+		if latest.Before(started) {
+			latest = started
+		}
+	}
+	return latest, true
+}
+
 // MinBackoffExpiration recursively searches through err for BackoffErrors and returns
 // the minimum of all found backoff times.
 func MinBackoffExpiration(err error) (time.Time, bool) {

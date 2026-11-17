@@ -33,11 +33,15 @@ import (
 	"k8s.io/kubernetes/pkg/features"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/component-helpers/storage/ephemeral"
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	"k8s.io/kubernetes/pkg/kubelet/volumemanager/cache"
@@ -45,6 +49,14 @@ import (
 	"k8s.io/kubernetes/pkg/volume/csimigration"
 	"k8s.io/kubernetes/pkg/volume/util"
 	volumetypes "k8s.io/kubernetes/pkg/volume/util/types"
+	"k8s.io/utils/clock"
+)
+
+const (
+	initialVolumeRetryTimeout   = 3 * time.Second
+	initialVolumeRetryMaxPasses = 4
+	initialVolumeRetryDelay     = 100 * time.Millisecond
+	initialVolumeRetryJitter    = 0.1
 )
 
 // DesiredStateOfWorldPopulator periodically loops through the list of active
@@ -93,6 +105,7 @@ type PodManager interface {
 // that exist on this host
 //
 // desiredStateOfWorld - the cache to populate
+// clock - controls the initial volume-authorization retry budget
 func NewDesiredStateOfWorldPopulator(
 	kubeClient clientset.Interface,
 	loopSleepDuration time.Duration,
@@ -102,7 +115,8 @@ func NewDesiredStateOfWorldPopulator(
 	actualStateOfWorld cache.ActualStateOfWorld,
 	csiMigratedPluginManager csimigration.PluginManager,
 	intreeToCSITranslator csimigration.InTreeToCSITranslator,
-	volumePluginMgr *volume.VolumePluginMgr) DesiredStateOfWorldPopulator {
+	volumePluginMgr *volume.VolumePluginMgr,
+	clock clock.PassiveClock) DesiredStateOfWorldPopulator {
 	return &desiredStateOfWorldPopulator{
 		kubeClient:          kubeClient,
 		loopSleepDuration:   loopSleepDuration,
@@ -111,12 +125,14 @@ func NewDesiredStateOfWorldPopulator(
 		desiredStateOfWorld: desiredStateOfWorld,
 		actualStateOfWorld:  actualStateOfWorld,
 		pods: processedPods{
-			processedPods: make(map[volumetypes.UniquePodName]bool)},
+			processedPods:        make(map[volumetypes.UniquePodName]bool),
+			initialVolumeRetries: make(map[volumetypes.UniquePodName]initialVolumeRetryState)},
 		hasAddedPods:             false,
 		hasAddedPodsLock:         sync.RWMutex{},
 		csiMigratedPluginManager: csiMigratedPluginManager,
 		intreeToCSITranslator:    intreeToCSITranslator,
 		volumePluginMgr:          volumePluginMgr,
+		clock:                    clock,
 	}
 }
 
@@ -133,11 +149,67 @@ type desiredStateOfWorldPopulator struct {
 	csiMigratedPluginManager csimigration.PluginManager
 	intreeToCSITranslator    csimigration.InTreeToCSITranslator
 	volumePluginMgr          *volume.VolumePluginMgr
+	clock                    clock.PassiveClock
 }
 
 type processedPods struct {
-	processedPods map[volumetypes.UniquePodName]bool
+	processedPods        map[volumetypes.UniquePodName]bool
+	initialVolumeRetries map[volumetypes.UniquePodName]initialVolumeRetryState
 	sync.RWMutex
+}
+
+type initialVolumeRetryState struct {
+	finished     bool
+	firstFailure time.Time
+	deadline     time.Time
+	nextRetry    time.Time
+	passes       int
+	errors       []string
+}
+
+var errInitialVolumeRetryCapacity = errors.New("shared client capacity unavailable for initial volume retry")
+
+type initialVolumeRetryContextKey struct{}
+
+type initialVolumeRetryRateLimiter struct {
+	flowcontrol.RateLimiter
+}
+
+func (l initialVolumeRetryRateLimiter) Wait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !l.TryAccept() {
+		return errInitialVolumeRetryCapacity
+	}
+	return nil
+}
+
+type initialVolumeRetryRESTClient struct {
+	rest.Interface
+}
+
+func (c initialVolumeRetryRESTClient) Get() *rest.Request {
+	// Replace this request's wait, not the shared limiter. Successful admission
+	// consumes exactly one shared token without reserving future capacity.
+	return c.Interface.Get().Throttle(initialVolumeRetryRateLimiter{c.GetRateLimiter()})
+}
+
+func (dswp *desiredStateOfWorldPopulator) volumeClient(ctx context.Context) corev1client.CoreV1Interface {
+	client := dswp.kubeClient.CoreV1()
+	if ctx.Value(initialVolumeRetryContextKey{}) == nil {
+		return client
+	}
+	restClient := client.RESTClient()
+	if restClient == nil || restClient.GetRateLimiter() == nil {
+		// Clients without a shared REST limiter retain their configured behavior.
+		return client
+	}
+	return corev1client.New(initialVolumeRetryRESTClient{restClient})
+}
+
+func (s initialVolumeRetryState) exhausted(now time.Time) bool {
+	return !now.Before(s.deadline) || s.passes >= initialVolumeRetryMaxPasses
 }
 
 func (dswp *desiredStateOfWorldPopulator) Run(ctx context.Context, sourcesReady config.SourcesReady) {
@@ -178,21 +250,88 @@ func (dswp *desiredStateOfWorldPopulator) populatorLoop(ctx context.Context) {
 // Iterate through all pods and add to desired state of world if they don't
 // exist but should
 func (dswp *desiredStateOfWorldPopulator) findAndAddNewPods(ctx context.Context) {
+	var retryPods []*v1.Pod
 	for _, pod := range dswp.podManager.GetPods() {
-		// Keep consistency of adding pod during reconstruction
-		if dswp.hasAddedPods && dswp.podStateProvider.ShouldPodContainersBeTerminating(pod.UID) {
-			// Do not (re)add volumes for pods that can't also be starting containers
+		if !dswp.shouldProcessPodVolumes(ctx, pod) {
 			continue
 		}
-
-		if !dswp.hasAddedPods && dswp.podStateProvider.ShouldPodRuntimeBeRemoved(pod.UID) {
-			// When kubelet restarts, we need to add pods to dsw if there is a possibility
-			// that the container may still be running
+		podName := util.GetUniquePodName(pod)
+		dswp.pods.RLock()
+		if dswp.pods.processedPods[podName] {
+			dswp.pods.RUnlock()
 			continue
 		}
-
+		state, retrying := dswp.pods.initialVolumeRetries[podName]
+		dswp.pods.RUnlock()
+		if retrying && !state.finished && !state.exhausted(dswp.clock.Now()) &&
+			!dswp.podStateProvider.ShouldPodContainersBeTerminating(pod.UID) {
+			// Fast retries share the API client with first-time lookups. Finish
+			// ordinary work in this snapshot before spending more retry capacity.
+			retryPods = append(retryPods, pod)
+			continue
+		}
 		dswp.processPodVolumes(ctx, pod)
 	}
+
+	var nextPod *v1.Pod
+	var nextRetry time.Time
+	for _, pod := range retryPods {
+		if ctx.Err() != nil {
+			return
+		}
+		// Ordinary lookups may block long enough for this Pod to change or disappear.
+		currentPod, exists := dswp.podManager.GetPodByUID(pod.UID)
+		if !exists || !dswp.shouldProcessPodVolumes(ctx, currentPod) {
+			continue
+		}
+		if dswp.podStateProvider.ShouldPodContainersBeTerminating(currentPod.UID) {
+			// Reconstruction remains ordinary work if termination began while
+			// fresh lookups were running.
+			dswp.processPodVolumes(ctx, currentPod)
+			continue
+		}
+		podName := util.GetUniquePodName(currentPod)
+		dswp.pods.RLock()
+		state, retrying := dswp.pods.initialVolumeRetries[podName]
+		dswp.pods.RUnlock()
+		if !retrying || state.finished {
+			continue
+		}
+		now := dswp.clock.Now()
+		if state.exhausted(now) {
+			dswp.failInitialVolumeRetry(ctx, podName, "retry budget exhausted", state.firstFailure)
+			continue
+		}
+		if now.Before(state.nextRetry) {
+			continue
+		}
+		if nextPod == nil || state.nextRetry.Before(nextRetry) ||
+			(state.nextRetry.Equal(nextRetry) && currentPod.UID < nextPod.UID) {
+			nextPod, nextRetry = currentPod, state.nextRetry
+		}
+	}
+	if nextPod != nil && ctx.Err() == nil {
+		// Admit a new Pod snapshot before starting another optional retry pass.
+		currentPod, exists := dswp.podManager.GetPodByUID(nextPod.UID)
+		if exists && dswp.shouldProcessPodVolumes(ctx, currentPod) {
+			dswp.processPodVolumes(ctx, currentPod)
+		}
+	}
+}
+
+func (dswp *desiredStateOfWorldPopulator) shouldProcessPodVolumes(ctx context.Context, pod *v1.Pod) bool {
+	// Keep consistency of adding pod during reconstruction.
+	if dswp.hasAddedPods && dswp.podStateProvider.ShouldPodContainersBeTerminating(pod.UID) {
+		// Do not (re)add volumes for pods that can't also be starting containers.
+		dswp.failInitialVolumeRetry(ctx, util.GetUniquePodName(pod), "pod is terminating", time.Time{})
+		return false
+	}
+	if !dswp.hasAddedPods && dswp.podStateProvider.ShouldPodRuntimeBeRemoved(pod.UID) {
+		// Reconstruction is needed only if containers may still be running.
+		dswp.failInitialVolumeRetry(ctx, util.GetUniquePodName(pod), "pod runtime can be removed", time.Time{})
+		return false
+	}
+	return true
 }
 
 // Iterate through all pods in desired state of world, and remove if they no
@@ -285,7 +424,32 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 		return
 	}
 
+	allowInitialRetry := !dswp.podStateProvider.ShouldPodContainersBeTerminating(pod.UID)
+	if !allowInitialRetry {
+		dswp.failInitialVolumeRetry(ctx, uniquePodName, "pod is terminating", time.Time{})
+	}
+	retryCtx, cancel, process := dswp.initialVolumeRetryContext(ctx, uniquePodName)
+	if !process {
+		return
+	}
+	if cancel != nil {
+		defer cancel()
+	}
+	dswp.pods.RLock()
+	retryState := dswp.pods.initialVolumeRetries[uniquePodName]
+	allowInitialRetry = allowInitialRetry && !retryState.finished
+	dswp.pods.RUnlock()
+
 	allVolumesAdded := true
+	onlyAuthorizationErrors := true
+	var firstFailure time.Time
+	var authorizationErrors []string
+	publishAuthorizationErrors := func() {
+		for _, err := range authorizationErrors {
+			dswp.desiredStateOfWorld.AddErrorToPodWithBackoffStart(uniquePodName, err, retryState.firstFailure)
+		}
+		authorizationErrors = nil
+	}
 	collectSELinuxOptions := utilfeature.DefaultFeatureGate.Enabled(features.SELinuxMountReadWriteOncePod)
 	mounts, devices, seLinuxContainerContexts := util.GetPodVolumeNames(pod, collectSELinuxOptions)
 
@@ -298,10 +462,29 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 		}
 
 		pvc, volumeSpec, volumeGIDValue, err :=
-			dswp.createVolumeSpec(ctx, podVolume, pod, mounts, devices)
+			dswp.createVolumeSpec(retryCtx, podVolume, pod, mounts, devices)
 		if err != nil {
+			if errors.Is(err, errInitialVolumeRetryCapacity) {
+				publishAuthorizationErrors()
+				dswp.failInitialVolumeRetry(ctx, uniquePodName, "shared client capacity unavailable", retryState.firstFailure)
+				return
+			}
+			observedAt := dswp.clock.Now()
 			logger.Error(err, "Error processing volume", "pod", klog.KObj(pod), "volumeName", podVolume.Name)
-			dswp.desiredStateOfWorld.AddErrorToPod(uniquePodName, err.Error())
+			if allowInitialRetry && onlyAuthorizationErrors && apierrors.IsForbidden(err) {
+				if firstFailure.IsZero() {
+					firstFailure = observedAt
+				}
+				authorizationErrors = append(authorizationErrors, err.Error())
+			} else {
+				onlyAuthorizationErrors = false
+				publishAuthorizationErrors()
+				if errors.Is(err, context.DeadlineExceeded) && retryCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+					dswp.desiredStateOfWorld.AddErrorToPodWithBackoffStart(uniquePodName, err.Error(), retryState.firstFailure)
+				} else {
+					dswp.desiredStateOfWorld.AddErrorToPod(uniquePodName, err.Error())
+				}
+			}
 			allVolumesAdded = false
 			continue
 		}
@@ -311,7 +494,9 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 			logger, uniquePodName, pod, volumeSpec, podVolume.Name, volumeGIDValue, seLinuxContainerContexts[podVolume.Name])
 		if err != nil {
 			logger.Error(err, "Failed to add volume to desiredStateOfWorld", "pod", klog.KObj(pod), "volumeName", podVolume.Name, "volumeSpecName", volumeSpec.Name())
+			publishAuthorizationErrors()
 			dswp.desiredStateOfWorld.AddErrorToPod(uniquePodName, err.Error())
+			onlyAuthorizationErrors = false
 			allVolumesAdded = false
 			continue
 		}
@@ -328,7 +513,22 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 		dswp.actualStateOfWorld.MarkRemountRequired(logger, uniquePodName)
 		// Remove any stored errors for the pod, everything went well in this processPodVolumes
 		dswp.desiredStateOfWorld.PopPodErrors(uniquePodName)
-	} else if dswp.podHasBeenSeenOnce(uniquePodName) {
+	} else {
+		// Binding and NodeAuthorizer graph updates are asynchronous. Defer only
+		// bounded initial lookup failures, not errors from steady-state refreshes.
+		if allowInitialRetry && onlyAuthorizationErrors && len(authorizationErrors) > 0 &&
+			dswp.deferInitialVolumeErrors(uniquePodName, authorizationErrors, firstFailure) {
+			return
+		}
+		publishAuthorizationErrors()
+		if retryCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			for _, err := range retryState.errors {
+				dswp.desiredStateOfWorld.AddErrorToPodWithBackoffStart(uniquePodName, err, retryState.firstFailure)
+			}
+		}
+		if !dswp.podHasBeenSeenOnce(uniquePodName) {
+			return
+		}
 		// For the Pod which has been processed at least once, even though some volumes
 		// may not have been reprocessed successfully this round, we still mark it as processed to avoid
 		// processing it at a very high frequency. The pod will be reprocessed when volume manager calls
@@ -336,6 +536,69 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 		dswp.markPodProcessed(uniquePodName)
 	}
 
+}
+
+func (dswp *desiredStateOfWorldPopulator) initialVolumeRetryContext(
+	ctx context.Context, podName volumetypes.UniquePodName) (context.Context, context.CancelFunc, bool) {
+	dswp.pods.Lock()
+	state, found := dswp.pods.initialVolumeRetries[podName]
+	if !found || state.finished {
+		dswp.pods.Unlock()
+		return ctx, nil, true
+	}
+	now := dswp.clock.Now()
+	if state.exhausted(now) {
+		dswp.pods.Unlock()
+		dswp.failInitialVolumeRetry(ctx, podName, "retry budget exhausted", state.firstFailure)
+		return ctx, nil, false
+	}
+	if now.Before(state.nextRetry) {
+		dswp.pods.Unlock()
+		return ctx, nil, false
+	}
+	state.passes++
+	dswp.pods.initialVolumeRetries[podName] = state
+	dswp.pods.Unlock()
+	retryCtx, cancel := context.WithTimeout(ctx, state.deadline.Sub(now))
+	return context.WithValue(retryCtx, initialVolumeRetryContextKey{}, true), cancel, true
+}
+
+func (dswp *desiredStateOfWorldPopulator) failInitialVolumeRetry(ctx context.Context, podName volumetypes.UniquePodName, reason string, backoffStart time.Time) {
+	dswp.pods.Lock()
+	state, found := dswp.pods.initialVolumeRetries[podName]
+	if !found || state.finished {
+		dswp.pods.Unlock()
+		return
+	}
+	dswp.pods.processedPods[podName] = true
+	dswp.pods.initialVolumeRetries[podName] = initialVolumeRetryState{finished: true}
+	dswp.pods.Unlock()
+	for _, err := range state.errors {
+		dswp.desiredStateOfWorld.AddErrorToPodWithBackoffStart(podName, err, backoffStart)
+	}
+	klog.FromContext(ctx).V(3).Info("Stopped initial volume authorization retries", "podUID", podName, "retryPasses", state.passes, "reason", reason)
+}
+
+func (dswp *desiredStateOfWorldPopulator) deferInitialVolumeErrors(podName volumetypes.UniquePodName, errs []string, firstFailure time.Time) bool {
+	dswp.pods.Lock()
+	defer dswp.pods.Unlock()
+	state, found := dswp.pods.initialVolumeRetries[podName]
+	if state.finished {
+		return false
+	}
+	now := dswp.clock.Now()
+	if !found {
+		state.firstFailure = firstFailure
+		state.deadline = now.Add(initialVolumeRetryTimeout)
+	}
+	if state.exhausted(now) {
+		return false
+	}
+	state.errors = append([]string(nil), errs...)
+	state.nextRetry = now.Add(wait.Jitter(initialVolumeRetryDelay<<state.passes, initialVolumeRetryJitter))
+	dswp.pods.processedPods[podName] = false
+	dswp.pods.initialVolumeRetries[podName] = state
+	return true
 }
 
 // checkVolumeFSResize records desired PVC size for a volume mounted by the pod.
@@ -410,6 +673,8 @@ func (dswp *desiredStateOfWorldPopulator) markPodProcessed(
 	defer dswp.pods.Unlock()
 
 	dswp.pods.processedPods[podName] = true
+	// ReprocessPod must not renew this budget after success or failure escalation.
+	dswp.pods.initialVolumeRetries[podName] = initialVolumeRetryState{finished: true}
 }
 
 // deleteProcessedPod removes the specified pod from processedPods
@@ -419,6 +684,7 @@ func (dswp *desiredStateOfWorldPopulator) deleteProcessedPod(
 	defer dswp.pods.Unlock()
 
 	delete(dswp.pods.processedPods, podName)
+	delete(dswp.pods.initialVolumeRetries, podName)
 }
 
 // createVolumeSpec creates and returns a mutable volume.Spec object for the
@@ -445,7 +711,7 @@ func (dswp *desiredStateOfWorldPopulator) createVolumeSpec(
 			ctx, pod.Namespace, pvcSource.ClaimName)
 		if err != nil {
 			return nil, nil, "", fmt.Errorf(
-				"error processing PVC %s/%s: %v",
+				"error processing PVC %s/%s: %w",
 				pod.Namespace,
 				pvcSource.ClaimName,
 				err)
@@ -462,7 +728,7 @@ func (dswp *desiredStateOfWorldPopulator) createVolumeSpec(
 			dswp.getPVSpec(ctx, pvName, pvcSource.ReadOnly, pvcUID)
 		if err != nil {
 			return nil, nil, "", fmt.Errorf(
-				"error processing PVC %s/%s: %v",
+				"error processing PVC %s/%s: %w",
 				pod.Namespace,
 				pvcSource.ClaimName,
 				err)
@@ -524,9 +790,12 @@ func (dswp *desiredStateOfWorldPopulator) createVolumeSpec(
 func (dswp *desiredStateOfWorldPopulator) getPVCExtractPV(
 	ctx context.Context, namespace string, claimName string) (*v1.PersistentVolumeClaim, error) {
 	pvc, err :=
-		dswp.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, claimName, metav1.GetOptions{})
-	if err != nil || pvc == nil {
-		return nil, fmt.Errorf("failed to fetch PVC from API server: %v", err)
+		dswp.volumeClient(ctx).PersistentVolumeClaims(namespace).Get(ctx, claimName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch PVC from API server: %w", err)
+	}
+	if pvc == nil {
+		return nil, fmt.Errorf("API server returned no PVC %s/%s", namespace, claimName)
 	}
 
 	// Pods that uses a PVC that is being deleted and not protected by
@@ -565,10 +834,13 @@ func (dswp *desiredStateOfWorldPopulator) getPVSpec(
 	name string,
 	pvcReadOnly bool,
 	expectedClaimUID types.UID) (*volume.Spec, string, error) {
-	pv, err := dswp.kubeClient.CoreV1().PersistentVolumes().Get(ctx, name, metav1.GetOptions{})
-	if err != nil || pv == nil {
+	pv, err := dswp.volumeClient(ctx).PersistentVolumes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
 		return nil, "", fmt.Errorf(
-			"failed to fetch PV %s from API server: %v", name, err)
+			"failed to fetch PV %s from API server: %w", name, err)
+	}
+	if pv == nil {
+		return nil, "", fmt.Errorf("API server returned no PV %s", name)
 	}
 
 	if pv.Spec.ClaimRef == nil {

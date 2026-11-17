@@ -17,10 +17,13 @@ limitations under the License.
 package cache
 
 import (
+	"errors"
+	"fmt"
 	"maps"
 	"math"
 	"slices"
 	"testing"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -30,12 +33,59 @@ import (
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/klog/v2/ktesting"
 	"k8s.io/kubernetes/pkg/features"
+	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetesting "k8s.io/kubernetes/pkg/volume/testing"
 	"k8s.io/kubernetes/pkg/volume/util"
 	volumetypes "k8s.io/kubernetes/pkg/volume/util/types"
 	"k8s.io/utils/ptr"
 )
+
+func TestPodErrorsPreserveBackoffStart(t *testing.T) {
+	dsw := NewDesiredStateOfWorld(nil, nil)
+	podName := volumetypes.UniquePodName("pod")
+	first := time.Unix(100, 0)
+	latest := first.Add(time.Second)
+	dsw.AddErrorToPodWithBackoffStart(podName, "volume b", first)
+	dsw.AddErrorToPodWithBackoffStart(podName, "volume a", first)
+	dsw.AddErrorToPodWithBackoffStart(podName, "volume b", latest)
+
+	errs := dsw.PopPodErrors(podName)
+	if len(errs) != 2 || errs[0].Error() != "volume a" || errs[1].Error() != "volume b" {
+		t.Fatalf("expected sorted, deduplicated messages, got %v", errs)
+	}
+	if started, ok := kubecontainer.LatestBackoffStart(errors.Join(errs...)); !ok || !started.Equal(latest) {
+		t.Fatalf("expected latest origin %v, got %v, found=%t", latest, started, ok)
+	}
+	if len(dsw.PopPodErrors(podName)) != 0 || len(dsw.GetPodsWithErrors()) != 0 {
+		t.Fatal("consuming errors must clear both messages and timing metadata")
+	}
+}
+
+func TestPodErrorFreshOccurrenceReplacesBackoffStart(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		t.Run(fmt.Sprintf("full=%t", full), func(t *testing.T) {
+			dsw := NewDesiredStateOfWorld(nil, nil)
+			podName := volumetypes.UniquePodName("pod")
+			dsw.AddErrorToPodWithBackoffStart(podName, "volume failure", time.Unix(100, 0))
+			if full {
+				for i := 0; i < maxPodErrors+2; i++ {
+					dsw.AddErrorToPod(podName, fmt.Sprintf("other error %d", i))
+				}
+			}
+			dsw.AddErrorToPod(podName, "volume failure")
+			for _, err := range dsw.PopPodErrors(podName) {
+				if err.Error() == "volume failure" {
+					if started, ok := kubecontainer.LatestBackoffStart(err); ok {
+						t.Fatalf("fresh occurrence retained stale origin %v", started)
+					}
+					return
+				}
+			}
+			t.Fatal("fresh occurrence disappeared from the error cache")
+		})
+	}
+}
 
 // Calls AddPodToVolume() to add new pod to new volume
 // Verifies newly added pod/volume exists via

@@ -1546,15 +1546,21 @@ func (p *podWorkers) completeWork(logger klog.Logger, podUID types.UID, phaseTra
 		// Error occurred during the sync; back off and then retry. If the error includes a backoff expiration,
 		// wait until then instead of the default to avoid adding extra time to the backoff.
 		backoff := p.backOffPeriod
+		var elapsed time.Duration
 		if backoffAt, isBackoffErr := kubecontainer.MinBackoffExpiration(syncErr); isBackoffErr {
 			backoff = backoffAt.Sub(p.clock.Now())
+		} else if started, deferred := kubecontainer.LatestBackoffStart(syncErr); deferred {
+			elapsed = max(0, p.clock.Now().Sub(started))
 		}
 		if backoff < 0 {
 			backoff = 0
 		} else if backoff > p.resyncInterval {
 			backoff = p.resyncInterval
 		}
-		p.workQueue.Enqueue(podUID, wait.Jitter(backoff, workerBackOffPeriodJitterFactor))
+		// Sample the normal jitter before crediting time already spent. Deferral
+		// must not start a fresh backoff or narrow its original jitter window.
+		delay := wait.Jitter(backoff, workerBackOffPeriodJitterFactor)
+		p.workQueue.Enqueue(podUID, max(0, delay-elapsed))
 	}
 
 	// if there is a pending update for this worker, requeue immediately, otherwise
