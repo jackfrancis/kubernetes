@@ -58,6 +58,8 @@ type DesiredStateOfWorldPopulator interface {
 	// to false, forcing it to be reprocessed. This is required to enable
 	// remounting volumes on pod updates (volumes like Downward API volumes
 	// depend on this behavior to ensure volume content is updated).
+	// It also discards errors reported by earlier passes, so callers waiting
+	// on the pod see the outcome of the pass they requested.
 	ReprocessPod(podName volumetypes.UniquePodName)
 
 	// HasAddedPods returns whether the populator has looped through the list
@@ -111,7 +113,9 @@ func NewDesiredStateOfWorldPopulator(
 		desiredStateOfWorld: desiredStateOfWorld,
 		actualStateOfWorld:  actualStateOfWorld,
 		pods: processedPods{
-			processedPods: make(map[volumetypes.UniquePodName]bool)},
+			processedPods:        make(map[volumetypes.UniquePodName]bool),
+			reprocessGenerations: make(map[volumetypes.UniquePodName]uint64),
+		},
 		hasAddedPods:             false,
 		hasAddedPodsLock:         sync.RWMutex{},
 		csiMigratedPluginManager: csiMigratedPluginManager,
@@ -137,6 +141,11 @@ type desiredStateOfWorldPopulator struct {
 
 type processedPods struct {
 	processedPods map[volumetypes.UniquePodName]bool
+	// reprocessGenerations counts ReprocessPod calls per pod. A pass that
+	// ReprocessPod overtakes neither reports errors nor marks the pod
+	// processed: its results predate the request, and marking the pod would
+	// swallow the request.
+	reprocessGenerations map[volumetypes.UniquePodName]uint64
 	sync.RWMutex
 }
 
@@ -160,7 +169,11 @@ func (dswp *desiredStateOfWorldPopulator) Run(ctx context.Context, sourcesReady 
 
 func (dswp *desiredStateOfWorldPopulator) ReprocessPod(
 	podName volumetypes.UniquePodName) {
-	dswp.markPodProcessingFailed(podName)
+	dswp.pods.Lock()
+	defer dswp.pods.Unlock()
+	dswp.pods.processedPods[podName] = false
+	dswp.pods.reprocessGenerations[podName]++
+	dswp.desiredStateOfWorld.PopPodErrors(podName)
 }
 
 func (dswp *desiredStateOfWorldPopulator) HasAddedPods() bool {
@@ -284,6 +297,7 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 	if dswp.podPreviouslyProcessed(uniquePodName) {
 		return
 	}
+	generation := dswp.podReprocessGeneration(uniquePodName)
 
 	allVolumesAdded := true
 	collectSELinuxOptions := utilfeature.DefaultFeatureGate.Enabled(features.SELinuxMountReadWriteOncePod)
@@ -301,7 +315,7 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 			dswp.createVolumeSpec(ctx, podVolume, pod, mounts, devices)
 		if err != nil {
 			logger.Error(err, "Error processing volume", "pod", klog.KObj(pod), "volumeName", podVolume.Name)
-			dswp.desiredStateOfWorld.AddErrorToPod(uniquePodName, err.Error())
+			dswp.addPodError(uniquePodName, generation, err)
 			allVolumesAdded = false
 			continue
 		}
@@ -311,7 +325,7 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 			logger, uniquePodName, pod, volumeSpec, podVolume.Name, volumeGIDValue, seLinuxContainerContexts[podVolume.Name])
 		if err != nil {
 			logger.Error(err, "Failed to add volume to desiredStateOfWorld", "pod", klog.KObj(pod), "volumeName", podVolume.Name, "volumeSpecName", volumeSpec.Name())
-			dswp.desiredStateOfWorld.AddErrorToPod(uniquePodName, err.Error())
+			dswp.addPodError(uniquePodName, generation, err)
 			allVolumesAdded = false
 			continue
 		}
@@ -322,7 +336,7 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 
 	// some of the volume additions may have failed, should not mark this pod as fully processed
 	if allVolumesAdded {
-		dswp.markPodProcessed(uniquePodName)
+		dswp.markPodProcessed(uniquePodName, generation)
 		// New pod has been synced. Re-mount all volumes that need it
 		// (e.g. DownwardAPI)
 		dswp.actualStateOfWorld.MarkRemountRequired(logger, uniquePodName)
@@ -333,7 +347,7 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(ctx context.Context,
 		// may not have been reprocessed successfully this round, we still mark it as processed to avoid
 		// processing it at a very high frequency. The pod will be reprocessed when volume manager calls
 		// ReprocessPod() which is triggered by SyncPod.
-		dswp.markPodProcessed(uniquePodName)
+		dswp.markPodProcessed(uniquePodName, generation)
 	}
 
 }
@@ -384,12 +398,26 @@ func (dswp *desiredStateOfWorldPopulator) podPreviouslyProcessed(
 	return dswp.pods.processedPods[podName]
 }
 
-// markPodProcessingFailed marks the specified pod from processedPods as false to indicate that it failed processing
-func (dswp *desiredStateOfWorldPopulator) markPodProcessingFailed(
-	podName volumetypes.UniquePodName) {
-	dswp.pods.Lock()
-	dswp.pods.processedPods[podName] = false
-	dswp.pods.Unlock()
+// podReprocessGeneration returns the number of ReprocessPod calls for the
+// specified pod, which a pass compares before reporting its outcome.
+func (dswp *desiredStateOfWorldPopulator) podReprocessGeneration(
+	podName volumetypes.UniquePodName) uint64 {
+	dswp.pods.RLock()
+	defer dswp.pods.RUnlock()
+	return dswp.pods.reprocessGenerations[podName]
+}
+
+// addPodError reports err for the specified pod, unless ReprocessPod was
+// called after the pass read generation; the requested pass reports instead.
+func (dswp *desiredStateOfWorldPopulator) addPodError(
+	podName volumetypes.UniquePodName, generation uint64, err error) {
+	// Holding the lock while reporting keeps ReprocessPod from discarding
+	// errors between the check and the report.
+	dswp.pods.RLock()
+	defer dswp.pods.RUnlock()
+	if dswp.pods.reprocessGenerations[podName] == generation {
+		dswp.desiredStateOfWorld.AddErrorToPod(podName, err.Error())
+	}
 }
 
 // podHasBeenSeenOnce returns true if the pod has been seen by the popoulator
@@ -403,12 +431,16 @@ func (dswp *desiredStateOfWorldPopulator) podHasBeenSeenOnce(
 }
 
 // markPodProcessed records that the volumes for the specified pod have been
-// processed by the populator
+// processed by the populator, unless ReprocessPod was called after the pass
+// read generation.
 func (dswp *desiredStateOfWorldPopulator) markPodProcessed(
-	podName volumetypes.UniquePodName) {
+	podName volumetypes.UniquePodName, generation uint64) {
 	dswp.pods.Lock()
 	defer dswp.pods.Unlock()
 
+	if dswp.pods.reprocessGenerations[podName] != generation {
+		return
+	}
 	dswp.pods.processedPods[podName] = true
 }
 
@@ -419,6 +451,7 @@ func (dswp *desiredStateOfWorldPopulator) deleteProcessedPod(
 	defer dswp.pods.Unlock()
 
 	delete(dswp.pods.processedPods, podName)
+	delete(dswp.pods.reprocessGenerations, podName)
 }
 
 // createVolumeSpec creates and returns a mutable volume.Spec object for the

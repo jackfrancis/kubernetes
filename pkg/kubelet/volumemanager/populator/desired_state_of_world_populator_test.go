@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -256,6 +257,59 @@ func TestFindAndAddNewPods_WithVolumeRetrievalError(t *testing.T) {
 	}
 }
 
+func TestReprocessPod_DiscardsEarlierErrors(t *testing.T) {
+	dswp, fakePodManager, _ := prepareDswpWithVolume(t)
+	pluginPVOmittingClient(dswp)
+	pod := createPodWithVolume("dswp-test-pod", "dswp-test-volume-name", "file-bound", []v1.Container{{
+		VolumeMounts: []v1.VolumeMount{{Name: "dswp-test-volume-name", MountPath: "/mnt"}},
+	}})
+	fakePodManager.AddPod(pod)
+	podName := util.GetUniquePodName(pod)
+
+	tCtx := ktesting.Init(t)
+	dswp.findAndAddNewPods(tCtx)
+	require.Equal(t, []types.UniquePodName{podName}, dswp.desiredStateOfWorld.GetPodsWithErrors())
+
+	dswp.ReprocessPod(podName)
+	require.Empty(t, dswp.desiredStateOfWorld.GetPodsWithErrors(), "errors from the earlier pass should be discarded")
+
+	dswp.findAndAddNewPods(tCtx)
+	require.Equal(t, []types.UniquePodName{podName}, dswp.desiredStateOfWorld.GetPodsWithErrors(), "the requested pass should report its errors")
+}
+
+// TestFindAndAddNewPods_ReprocessPodDuringPass covers ReprocessPod arriving
+// while the populator waits on the API server for the same pod, as when the
+// pod worker syncs the pod during a slow or client-throttled PVC GET.
+func TestFindAndAddNewPods_ReprocessPodDuringPass(t *testing.T) {
+	dswp, fakePodManager, _ := prepareDswpWithVolume(t)
+	pod := createPodWithVolume("dswp-test-pod", "dswp-test-volume-name", "file-bound", []v1.Container{{
+		VolumeMounts: []v1.VolumeMount{{Name: "dswp-test-volume-name", MountPath: "/mnt"}},
+	}})
+	fakePodManager.AddPod(pod)
+	podName := util.GetUniquePodName(pod)
+
+	reprocessDuringGet := true
+	fakeClient := &fake.Clientset{}
+	fakeClient.AddReactor("get", "persistentvolumeclaims", func(action core.Action) (bool, runtime.Object, error) {
+		if reprocessDuringGet {
+			reprocessDuringGet = false
+			dswp.ReprocessPod(podName)
+		}
+		return true, nil, apierrors.NewForbidden(v1.Resource("persistentvolumeclaims"), "file-bound",
+			fmt.Errorf("no relationship found between node 'test-node' and this object"))
+	})
+	dswp.kubeClient = fakeClient
+
+	tCtx := ktesting.Init(t)
+	dswp.findAndAddNewPods(tCtx)
+	require.Empty(t, dswp.desiredStateOfWorld.GetPodsWithErrors(), "an overtaken pass should not report errors")
+	require.False(t, dswp.podPreviouslyProcessed(podName), "an overtaken pass should leave the pod for the requested pass")
+
+	dswp.findAndAddNewPods(tCtx)
+	require.Equal(t, []types.UniquePodName{podName}, dswp.desiredStateOfWorld.GetPodsWithErrors(), "the requested pass should report its errors")
+	require.True(t, dswp.podPreviouslyProcessed(podName), "the requested pass should mark the pod processed")
+}
+
 type mutablePodManager interface {
 	GetPodByName(string, string) (*v1.Pod, bool)
 	RemovePod(*v1.Pod)
@@ -295,6 +349,9 @@ func TestFindAndAddNewPods_FindAndRemoveDeletedPods(t *testing.T) {
 	// findAndRemoveDeletedPods() above must detect orphaned pod and delete it from the map
 	if _, ok := dswp.pods.processedPods[podName]; ok {
 		t.Fatalf("Failed to remove orphanded pods from internal map")
+	}
+	if _, ok := dswp.pods.reprocessGenerations[podName]; ok {
+		t.Fatalf("Failed to remove orphaned pod's reprocess generation from internal map")
 	}
 
 	volumeExists := dswp.desiredStateOfWorld.VolumeExists(expectedVolumeName, "" /* SELinuxContext */)
@@ -1638,7 +1695,9 @@ func createDswpWithVolumeWithCustomPluginMgr(pv *v1.PersistentVolume, pvc *v1.Pe
 		desiredStateOfWorld: fakesDSW,
 		actualStateOfWorld:  fakeASW,
 		pods: processedPods{
-			processedPods: make(map[types.UniquePodName]bool)},
+			processedPods:        make(map[types.UniquePodName]bool),
+			reprocessGenerations: make(map[types.UniquePodName]uint64),
+		},
 		csiMigratedPluginManager: csimigration.NewPluginManager(csiTranslator),
 		intreeToCSITranslator:    csiTranslator,
 		volumePluginMgr:          fakeVolumePluginMgr,

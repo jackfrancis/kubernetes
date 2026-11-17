@@ -25,12 +25,14 @@ import (
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,6 +43,7 @@ import (
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
 	utiltesting "k8s.io/client-go/util/testing"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
@@ -249,6 +252,51 @@ func TestWaitForAttachAndMountError(t *testing.T) {
 	if !strings.Contains(err.Error(),
 		"unattached volumes=[vol02 vol2], failed to process volumes=[vol03 vol3]") {
 		t.Errorf("Unexpected error info: %v", err)
+	}
+}
+
+// TestWaitForAttachAndMountTransientVolumeProcessingError models a node
+// authorizer that has not yet observed the pod's binding: the populator's PVC
+// or PV GET is forbidden for a while and then succeeds.
+func TestWaitForAttachAndMountTransientVolumeProcessingError(t *testing.T) {
+	for _, resource := range []string{"persistentvolumeclaims", "persistentvolumes"} {
+		t.Run(resource, func(t *testing.T) {
+			tCtx := ktesting.Init(t)
+			podManager := kubepod.NewBasicPodManager()
+			node, pod, pv, claim := createObjects(v1.PersistentVolumeFilesystem, v1.PersistentVolumeFilesystem)
+			kubeClient := fake.NewSimpleClientset(node, pod, pv, claim)
+			var authorized atomic.Bool
+			var denials atomic.Int32
+			kubeClient.PrependReactor("get", resource, func(action core.Action) (bool, runtime.Object, error) {
+				if authorized.Load() {
+					return false, nil, nil
+				}
+				denials.Add(1)
+				return true, nil, apierrors.NewForbidden(v1.Resource(resource), action.(core.GetAction).GetName(),
+					fmt.Errorf("no relationship found between node '%s' and this object", testHostname))
+			})
+
+			manager := newTestVolumeManager(t, t.TempDir(), podManager, kubeClient, node)
+			sourcesReady := config.NewSourcesReady(func(_ sets.Set[string]) bool { return true })
+			go manager.Run(tCtx, sourcesReady)
+			podManager.SetPods([]*v1.Pod{pod})
+			go simulateVolumeInUseUpdate(v1.UniqueVolumeName(node.Status.VolumesAttached[0].Name), tCtx.Done(), manager)
+
+			// A pass that reaches a new pod before its first sync records an error
+			// that no wait requested. Without discarding it, each wait fails on the
+			// previous pass's error while its own pass's error waits for the next
+			// one. Let each pass finish before the next wait starts, as the pod
+			// worker's backoff would.
+			require.Eventually(t, func() bool { return denials.Load() > 0 }, wait.ForeverTestTimeout, 10*time.Millisecond)
+			for range 2 {
+				before := denials.Load()
+				require.ErrorContains(t, manager.WaitForAttachAndMount(tCtx, pod), "no relationship found")
+				require.Eventually(t, func() bool { return denials.Load() > before }, wait.ForeverTestTimeout, 10*time.Millisecond)
+			}
+
+			authorized.Store(true)
+			require.NoError(t, manager.WaitForAttachAndMount(tCtx, pod), "the first wait after authorization should not fail on an earlier pass's error")
+		})
 	}
 }
 

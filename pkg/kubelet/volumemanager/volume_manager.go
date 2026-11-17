@@ -444,6 +444,8 @@ func (vm *volumeManager) WaitForAttachAndMount(ctx context.Context, pod *v1.Pod)
 	// Some pods expect to have Setup called over and over again to update.
 	// Remount plugins for which this is true. (Atomically updating volumes,
 	// like Downward API, depend on this to update the contents of the volume).
+	// Reprocessing also discards errors from earlier populator passes, so the
+	// wait below fails only on the outcome of a pass that starts now.
 	vm.desiredStateOfWorldPopulator.ReprocessPod(uniquePodName)
 
 	err := wait.PollUntilContextTimeout(
